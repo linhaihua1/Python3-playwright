@@ -45,9 +45,9 @@ def _prepare():
     if base_dir not in sys.path:
         sys.path.insert(0, base_dir)
 
-    # 导入 tests 包会做两件必要准备：
-    #   ① 摘掉工程 logger 的文件输出，避免测试往工程 Logs/ 里写日志
-    #   ② 调小 Selenium 显式等待的轮询间隔，避免"等待超时"类测试白等
+    # 导入 tests 包会做必要的测试隔离准备：
+    #   摘掉工程 logger 的文件输出，避免测试往工程 Logs/ 里写日志
+    #   （Playwright 的等待内建于 Locator，桩对象不产生真实等待，无需提速钩子）
     import tests  # noqa: F401
 
     return base_dir

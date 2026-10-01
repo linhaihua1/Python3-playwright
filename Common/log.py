@@ -71,7 +71,7 @@ def _log_root(project_path):
 def get_log(logger_name, console=True, level=logging.INFO):
     """创建（或取出已建好的）logger。
 
-    :param logger_name: 日志器名称，会显示在每条日志里。本工程用 'selenium'
+    :param logger_name: 日志器名称，会显示在每条日志里。本工程统一用 'uiauto'
     :param console:     是否同时输出到控制台，默认 True
     :param level:       最低记录级别，默认 INFO
     :return: logging.Logger
@@ -134,4 +134,4 @@ def get_log(logger_name, console=True, level=logging.INFO):
 #     log1.info('消息')
 #     log1.error('出错了', exc_info=1)   # exc_info=1 会带上完整异常堆栈，排错必加
 # ---------------------------------------------------------------------------
-log1 = get_log('selenium')
+log1 = get_log('uiauto')

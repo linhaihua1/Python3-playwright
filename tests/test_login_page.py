@@ -3,7 +3,7 @@
 单元测试：PageObject/loginPage.py（页面对象）
 
 页面对象是"业务动作"的落脚点，用例失败往往是因为某个动作点错了元素或顺序错了。
-这里用 FakeDriver 记录**元素定位值的调用序列**，把每个业务动作的操作步骤钉死：
+这里用 FakePage 记录**元素定位值的调用序列**，把每个业务动作的操作步骤钉死：
     登录 -> 填账号、填密码、点登录
     上传 -> 选文件、填三个字段、提交、收起列表、确定
     报送 -> 点报送、开初审下拉、选初审人、保存
@@ -19,10 +19,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-from selenium.common.exceptions import NoSuchElementException
+from Common.basePage import BasePage, NoSuchElementException
 
-from tests.helpers import FakeDriver, FakeElement, patch_config, patch_dirs
-from Common.basePage import BasePage
+from tests.helpers import FakePage, FakeElement, patch_config, patch_dirs
 from Common.elementPage import Element1
 from PageObject.loginPage import LoginPage
 
@@ -56,15 +55,23 @@ class _LoginPageTestCase(unittest.TestCase):
 
     # ---- 辅助 ----
     def make_page(self, element=None):
-        self.driver = FakeDriver(element=element or FakeElement())
+        self.driver = FakePage(element=element or FakeElement())
         self.page = LoginPage(self.driver)
         return self.page
 
     def located_values(self):
-        """按调用顺序取出所有被定位的定位值。"""
-        # 注意别用两个下划线做占位：它们会互相覆盖，导致过滤条件失效
-        return [value for kind, _by, value in self.driver.calls
-                if kind == 'find_element']
+        """按调用顺序取出所有被定位元素的**原始定位值**（剥掉 Playwright 选择器前缀）。
+
+        Playwright 版 fake 记录的是编译后的选择器串，如 'xpath=//input[...]'、
+        'css=[id="x"]'；而 Element1 里登记的定位值原文不带前缀（'xpath' 系即纯 xpath），
+        因此断言前统一剥掉 'xpath=' 前缀还原成原文，比对语义与迁移前完全一致。
+        """
+        values = []
+        for kind, selector in self.driver.calls:
+            if kind == 'locator':
+                values.append(selector[len('xpath='):]
+                              if selector.startswith('xpath=') else selector)
+        return values
 
 
 class TestPortalActions(_LoginPageTestCase):
@@ -80,8 +87,8 @@ class TestPortalActions(_LoginPageTestCase):
             [Element1.Username[1], Element1.Password[1], Element1.Sign_button[1]],
             '登录必须严格按「账号 -> 密码 -> 登录按钮」的顺序操作',
         )
-        self.assertIn('unit_user', element.sent)
-        self.assertIn('pwd123', element.sent)
+        self.assertIn('unit_user', element.filled)
+        self.assertIn('pwd123', element.filled)
 
     def test_登录后留一张截图便于回溯(self):
         self.make_page().login('u', 'p')
@@ -109,13 +116,13 @@ class TestMaterialNavigation(_LoginPageTestCase):
 class TestUpload(_LoginPageTestCase):
     """上传视频（本工程最主要的业务动作）。"""
 
-    def test_默认用send_keys方式上传(self):
+    def test_默认用直接赋值方式上传(self):
         element = FakeElement()
         page = self.make_page(element)
         page.upload_file(self.video)
 
         self.assertEqual(self.located_values(), [Element1.FileInput[1]])
-        self.assertEqual(element.sent, [self.video])
+        self.assertEqual(element.input_files, [self.video])
 
     def test_上传控件不可用时回退到autoit(self):
         """只有"技术性失败"才回退：file 控件拿不到，才需要改走系统对话框。"""
@@ -125,7 +132,7 @@ class TestUpload(_LoginPageTestCase):
                 mock.patch.object(page, 'upload_by_autoit') as fallback:
             page.upload_file(self.video)
 
-        self.assertEqual(fallback.call_count, 1, 'send_keys 失败必须回退到 autoit 方案')
+        self.assertEqual(fallback.call_count, 1, '直接赋值失败必须回退到 autoit 方案')
         self.assertEqual(
             self.located_values(),
             [Element1.uplaodbutton[1]],
@@ -135,7 +142,7 @@ class TestUpload(_LoginPageTestCase):
     def test_配置为autoit时直接走对话框方案(self):
         ini = '[testcase]\nupload_mode = autoit\n'
         with patch_config(ini_text=ini):
-            self.driver = FakeDriver(element=FakeElement())
+            self.driver = FakePage(element=FakeElement())
             page = LoginPage(self.driver)
             with mock.patch.object(page, 'upload_by_autoit') as fallback:
                 page.upload_file(self.video)
@@ -143,16 +150,26 @@ class TestUpload(_LoginPageTestCase):
         self.assertEqual(fallback.call_count, 1)
         self.assertEqual(self.located_values(), [Element1.uplaodbutton[1]])
 
+    def test_旧值名send_keys向后兼容仍走直接赋值(self):
+        """除 autoit 外的任何取值（含迁移前的旧值名 send_keys）都走直接赋值分支。"""
+        ini = '[testcase]\nupload_mode = send_keys\n'
+        element = FakeElement()
+        with patch_config(ini_text=ini):
+            self.driver = FakePage(element=element)
+            page = LoginPage(self.driver)
+            page.upload_file(self.video)
+        self.assertEqual(element.input_files, [self.video])
+
     def test_未配置上传文件且未传路径时报错(self):
         """不能静默跳过，否则用例会在"没上传"的情况下判为通过。
 
         同时必须**直接抛出配置错误**：早期实现会把这类错误也当作
-        "send_keys 方案失败"去回退 autoit，结果真实原因被盖成一句
+        "直接赋值方案失败"去回退 autoit，结果真实原因被盖成一句
         莫名其妙的 autoit 报错，排查时完全摸不着头脑。
         """
-        ini = '[testcase]\nupload_mode = send_keys\nupload_file =\n'
+        ini = '[testcase]\nupload_mode = set_input_files\nupload_file =\n'
         with patch_config(ini_text=ini):
-            self.driver = FakeDriver(element=FakeElement())
+            self.driver = FakePage(element=FakeElement())
             page = LoginPage(self.driver)
             with mock.patch.object(page, 'upload_by_autoit') as fallback:
                 with self.assertRaises(ValueError):
@@ -160,9 +177,9 @@ class TestUpload(_LoginPageTestCase):
         self.assertEqual(fallback.call_count, 0, '配置类错误不应触发 autoit 回退')
 
     def test_文件不存在时直接报错不回退(self):
-        ini = '[testcase]\nupload_mode = send_keys\n'
+        ini = '[testcase]\nupload_mode = set_input_files\n'
         with patch_config(ini_text=ini):
-            self.driver = FakeDriver(element=FakeElement())
+            self.driver = FakePage(element=FakeElement())
             page = LoginPage(self.driver)
             with mock.patch.object(page, 'upload_by_autoit') as fallback:
                 with self.assertRaises(FileNotFoundError):
@@ -184,9 +201,9 @@ class TestUpload(_LoginPageTestCase):
         element = FakeElement()
         page = self.make_page(element)
         page.fill_upload_form('张三', '13800000000', '深圳')
-        self.assertIn('张三', element.sent)
-        self.assertIn('13800000000', element.sent)
-        self.assertIn('深圳', element.sent)
+        self.assertIn('张三', element.filled)
+        self.assertIn('13800000000', element.filled)
+        self.assertIn('深圳', element.filled)
 
 
 class TestQueryAndSubmit(_LoginPageTestCase):

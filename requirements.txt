@@ -1,28 +1,40 @@
 # ==========================================================================
 #  Python 依赖清单
 #  安装：pip install -r requirements.txt
+#  装完后首次运行前还需下载 Playwright 自带浏览器：
+#      python -m playwright install chromium
+#  （Linux 新节点若缺系统运行库，加 --with-deps 一并装齐：
+#      python -m playwright install --with-deps chromium）
 # ==========================================================================
 
-# 核心依赖：浏览器自动化。Selenium 4 自带 Selenium Manager，
-# 会自动下载匹配的 chromedriver，无需手动放置 driver 文件。
-selenium>=4.19.0
+# 核心依赖：浏览器自动化。Playwright 自行管理浏览器与驱动，无需另装任何驱动。
+playwright>=1.47.0
 
 # --------------------------------------------------------------------------
 # 说明
-# --------------------------------------------------------------------------
-# 1. 报告与结果输出零额外依赖
+# -------------------------------------------------------------------------- # 1. 报告与结果输出零额外依赖
 #      HTML 报告走工程内置的 Common/HTMLTestReportCN.py，
 #      JUnit XML 走 Common/junitReport.py（纯标准库 xml.etree 实现）。
-#      所以流水线（Jenkins）上装完本文件就能跑，不需要 unittest-xml-reporting 之类。
+#      所以流水线（Jenkins）上装完本文件 + 一行 playwright install 就能跑，
+#      不需要 unittest-xml-reporting 之类。
 #
-# 2. 浏览器不在 pip 里装
-#      本机 / Jenkins 节点 -> 安装 Chrome 即可（Selenium Manager 自动配驱动）
-#      容器                -> 见仓库根目录 Dockerfile（已装 chromium + 中文字体）
+# 2. 浏览器不经系统安装
+#      本机 / Jenkins 节点 -> `python -m playwright install chromium` 即可，
+#      浏览器文件落在用户目录（%USERPROFILE%\AppData\Local\ms-playwright），
+#      与系统里装没装 Chrome 无关。
+#      想复用系统 chromium（容器等场景）：配置 [ci] chrome_binary 指向它。
+#      容器一键方案见仓库根目录 Dockerfile。
 #
-# 3. 可选依赖（默认不需要）
+# 3. 浏览器选择与迁移前配置保持同名（config.ini [environment] browser）
+#      chrome  -> Playwright 自带 Chromium（推荐）
+#      firefox -> 需额外 `python -m playwright install firefox`
+#      edge    -> Chromium channel=msedge，使用系统安装的 Edge
+#
+# 4. 可选依赖（默认不需要）
 #      仅当 config.ini -> [testcase] upload_mode = autoit 时才需要：
 #          pip install PyAutoIt
 #      ⚠️ 该方案靠模拟 Windows 原生「打开」对话框上传文件，
-#         在无头（CI 容器）环境下不可用，请保持默认的 send_keys 上传方式。
+#         在无头（CI 容器）环境下不可用，请保持默认上传方式
+#         （upload_mode 默认 set_input_files，由 Playwright 原生 API 实现）。
 #
 # PyAutoIt>=0.6.5

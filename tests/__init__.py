@@ -17,7 +17,7 @@
     python tests/run_unit_tests.py tests.test_config     # 只跑某一个模块
 
 【设计约束（新增测试时必须遵守）】
-    1. 绝不允许真的启动浏览器 —— 一律用 tests/helpers.py 里的 FakeDriver 替代。
+    1. 绝不允许真的启动浏览器 —— 一律用 tests/helpers.py 里的 FakePage 替代。
     2. 绝不允许写工程目录 —— 配置、日志、报告、截图全部重定向到临时目录
        （日志走 UI_LOG_DIR 环境变量，其余用 helpers.patch_config / helpers.patch_dirs）。
     3. 绝不允许连外网 —— SMTP 之类的出口一律 patch 掉。
@@ -89,30 +89,9 @@ def _silence_file_logging():
     log1.setLevel(logging.ERROR if os.environ.get('UT_SHOW_LOG') else logging.CRITICAL)
 
 
-def _speed_up_explicit_waits():
-    """把 Selenium 显式等待的轮询间隔调小，避免"等待超时"类用例白等。
-
-    WebDriverWait 默认 poll_frequency=0.5 秒，于是"超时 0.05 秒"的测试
-    实际要耗 0.5 秒；框架测试里有十几条这种用例，累计会让整个测试套件慢一倍。
-    这里只改默认轮询间隔，不改语义（超时时间仍由调用方决定）。
-    """
-    try:
-        from selenium.webdriver.support.ui import WebDriverWait
-    except Exception:       # pragma: no cover - 未装 selenium 时跳过
-        return
-
-    original_init = WebDriverWait.__init__
-
-    def fast_init(self, driver, timeout, poll_frequency=0.02, ignored_exceptions=None):
-        original_init(self, driver, timeout, poll_frequency, ignored_exceptions)
-
-    WebDriverWait.__init__ = fast_init
-
-
 # ★ 顺序不能改：先挪走日志目录，再导入 Common.log（见本文件头部说明）
 _LOG_ROOT = _redirect_log_dir()
 if _LOG_ROOT:
     atexit.register(shutil.rmtree, _LOG_ROOT, ignore_errors=True)
 
 _silence_file_logging()
-_speed_up_explicit_waits()

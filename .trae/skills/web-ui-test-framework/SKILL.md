@@ -27,8 +27,20 @@ description: 将基于 unittest + Selenium + PageObject 的 UI 自动化测试�
 
 ### 3. 引入「系统适配」机制
 - 新增系统无关的通用页面对象（如 `PageObject/genericPage.py`），提供配置驱动的 `login()/open_menu()/fill_form()/find_record()`，让标准登录的系统**零代码**跑通。
-- 配置新增 `[system]` 段：用户名/密码框 placeholder、登录按钮文字、登录成功标识文字、元素超时。换系统只改配置不改代码，并支持环境变量覆盖（`UI_段_键` 全大写）。
+- 配置新增 `[system]` 段：用户名/密码框 placeholder、登录按钮文字（必填）+ 登录成功标识文字、元素超时（可选）。换系统只改配置不改代码，并支持环境变量覆盖（`UI_段_键` 全大写）。
 - 复杂系统（验证码/SSO/特有页面）走方式二：新建 `PageObject/xxxPage.py` 继承 BasePage，复用通用能力。
+
+### 3.5 零硬编码纪律（本框架已全面执行，改造/新增代码必须遵守）
+- **业务数据**（标题文案、账号、文件路径、断言期望、报告元信息、邮件文案）：一律
+  `Config.require('段','键')`（及其 `require_int/require_float`，`get_account`、`get_upload_file`），
+  **代码里禁止出现兜底默认值**；缺配即抛 `ConfigMissingError`（文案含段/键/环境变量/含义），
+  runner 将其归为退出码 2（环境异常），绝不带空值误跑。
+- **技术参数**（超时、轮询间隔、视口、目录名、开关）：`Config.get/get_int/get_float` + 代码默认值，
+  配置分三段可覆盖：`[paths]`（用例目录、报告目录、截图目录、JUnit 文件名）、
+  `[tuning]`（视口、各类轮询/稳定等待、autoit 超时、通知超时）、
+  `[timing]`（用例各步骤的页面节奏秒数，用例里通过 `page_wait('键', 默认)` 读取，禁止裸写 `my_sleep(数字)`）。
+- **元素 xpath 属于定位代码**：集中在 `Common/elementPage.py`，不要塞进配置文件。
+- 邮件主题/正文用 `[sender] mail_subject/mail_body` 模板（`{date}` `{filename}` 占位符），文案不写死在 `sentMail.py`。
 
 ### 4. 补单元测试 + 全量回归
 - 用 `tests/helpers.py` 里的 `FakeDriver`/`FakeElement`/`patch_config` 为新方法写单测（不启动浏览器）。

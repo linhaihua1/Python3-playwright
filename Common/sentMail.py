@@ -46,11 +46,16 @@ from Common.config import Config
 from Common.dir_config import htmlreport_dir
 from Common.log import log1
 
-# SMTP 服务器与端口的兜底默认值（QQ 邮箱 SSL）。
+# SMTP 服务器与端口的兜底默认值（QQ 邮箱 SSL）——技术参数。
 # 真实取值优先来自 config.ini [sender] smtp_host / smtp_port，可被环境变量覆盖，
 # 换其它邮箱（163 / 企业邮箱等）只需改配置、不用改代码。
 SMTP_HOST = 'smtp.qq.com'
 SMTP_PORT = 465
+
+# 邮件主题/正文的"代码默认模板"只含占位符、不含任何业务文案（技术兜底）。
+# 想让邮件带中文说明，请在 config.ini -> [sender] mail_subject / mail_body 配置，
+# 两个值都支持 {date}（当天日期）与 {filename}（报告文件名）占位符。
+DEFAULT_SUBJECT_TEMPLATE = '{date} {filename}'
 
 
 def find_latest_report():
@@ -107,13 +112,18 @@ def sent_mail(report_path=None):
     filename = os.path.basename(report_path)
     rq = time.strftime('%Y%m%d', time.localtime(time.time()))   # 当天日期，用于主题
 
+    # 主题/正文模板来自配置（业务文案不写死在代码里），{date}/{filename} 占位替换
+    subject_tpl = Config.get('sender', 'mail_subject', DEFAULT_SUBJECT_TEMPLATE)
+    body_tpl = Config.get('sender', 'mail_body', '')            # 不配就没有正文文字
+
     try:
         # ---- 4. 组装邮件 ----
         message = MIMEMultipart()
         message['From'] = formataddr([sender_name, sender_email])   # 显示成「张三 <xx@qq.com>」
         message['To'] = ';'.join(addressed_emails)                  # 多个收件人用分号连接
-        message['Subject'] = '%s %s' % (rq, filename)               # 例：20260925 融媒...报告.html
-        message.attach(MIMEText('附件为%s' % filename, 'plain', 'utf-8'))   # 正文
+        message['Subject'] = subject_tpl.replace('{date}', rq).replace('{filename}', filename)
+        body = body_tpl.replace('{date}', rq).replace('{filename}', filename)
+        message.attach(MIMEText(body, 'plain', 'utf-8'))            # 正文
 
         # 读报告内容并作为附件：base64 编码 + 通用二进制类型
         with open(report_path, 'rb') as f:

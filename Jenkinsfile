@@ -10,9 +10,11 @@
 //    1. Jenkins 新建「Pipeline」任务（或「多分支流水线」，它会自动识别本文件）
 //    2. Pipeline script from SCM，指向本仓库，脚本路径填 Jenkinsfile
 //    3. 首次执行前准备：
-//       - 执行节点上装好 Python 3.9+ 与 Chrome
+//       - 执行节点上装好 Python 3.9+（无需安装 Chrome —— Playwright 自管浏览器，
+//         由「准备运行环境」阶段的 playwright install 自动下载）
 //       - 创建两个「Secret text」凭据（见下方 withCredentials 的说明）
 //       - 安装插件：JUnit、HTML Publisher、Timestamps（可选）
+//       - 节点首次构建需要联网下载浏览器（约 150MB，之后走缓存）
 //
 //  【三种触发方式（按需选一种或组合）】
 //    A. 上游构建任务触发（推荐，最贴合"构建后自动冒烟"）：
@@ -114,8 +116,9 @@ pipeline {
         }
 
         // ------------------------------------------------------------------
-        // ② 准备运行环境：独立虚拟环境 + 安装依赖
+        // ② 准备运行环境：独立虚拟环境 + 安装依赖 + 下载 Playwright 浏览器
         //    用 .venv 而不是节点的全局 Python，避免多个任务互相污染依赖版本
+        //    Playwright 浏览器首次构建需联网下载（约 150MB，之后走节点缓存）
         // ------------------------------------------------------------------
         stage('准备运行环境') {
             steps {
@@ -127,6 +130,7 @@ pipeline {
                             python3 -m venv .venv
                             .venv/bin/python -m pip install --upgrade pip
                             .venv/bin/python -m pip install -r requirements.txt
+                            .venv/bin/python -m playwright install chromium
                         '''
                     } else {
                         env.PYTHON_BIN = "${env.WORKSPACE}\\.venv\\Scripts\\python.exe"
@@ -134,6 +138,7 @@ pipeline {
                             python -m venv .venv
                             .venv\\Scripts\\python.exe -m pip install --upgrade pip
                             .venv\\Scripts\\python.exe -m pip install -r requirements.txt
+                            .venv\\Scripts\\python.exe -m playwright install chromium
                         '''
                     }
                     echo "Python 解释器：${env.PYTHON_BIN}"

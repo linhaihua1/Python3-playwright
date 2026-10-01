@@ -12,7 +12,7 @@ import os
 import unittest
 
 from tests.helpers import patch_config
-from Common.config import Config, ENV_PREFIX
+from Common.config import Config, ConfigMissingError, ENV_PREFIX
 
 
 class _EnvGuard(unittest.TestCase):
@@ -249,10 +249,51 @@ class TestBusinessHelpers(_EnvGuard):
             self.assertTrue(path.endswith(os.path.join('video', 'demo.mp4')))
             self.assertNotIn('~', path)
 
-    def test_未配置上传文件时返回None(self):
+    def test_未配置上传文件严格模式直接报错(self):
+        """业务数据缺失不再静默返回 None —— 必须报错并指明该配哪个键。"""
         ini = '[testcase]\nupload_file =\n'
         with patch_config(ini_text=ini):
-            self.assertIsNone(Config.get_upload_file())
+            with self.assertRaises(ConfigMissingError) as ctx:
+                Config.get_upload_file()
+            self.assertIn('upload_file', str(ctx.exception))
+
+    def test_非严格模式取上传文件未配置返回None(self):
+        """required=False 保留旧语义，给"可选读取"的调用方用。"""
+        ini = '[testcase]\nupload_file =\n'
+        with patch_config(ini_text=ini):
+            self.assertIsNone(Config.get_upload_file(required=False))
+
+    def test_require取到值(self):
+        with patch_config():
+            self.assertEqual(Config.require('assert', 'title_login'), '单元门户')
+
+    def test_require缺失时报错文案自带修复线索(self):
+        """报错必须让新人知道：哪个段、哪个键、哪个环境变量能覆盖。"""
+        ini = '[environment]\nurl = http://x\n'
+        with patch_config(ini_text=ini):
+            with self.assertRaises(ConfigMissingError) as ctx:
+                Config.require('assert', 'title_login', '登录页标题')
+            msg = str(ctx.exception)
+            self.assertIn('[assert] title_login', msg)
+            self.assertIn('UI_ASSERT_TITLE_LOGIN', msg)
+            self.assertIn('登录页标题', msg)
+
+    def test_require把空值也视为缺失(self):
+        ini = '[assert]\ntitle_login =   \n'
+        with patch_config(ini_text=ini):
+            with self.assertRaises(ConfigMissingError):
+                Config.require('assert', 'title_login')
+
+    def test_require_int非法值报错(self):
+        ini = '[assert]\ntitle_login = abc\n'
+        with patch_config(ini_text=ini):
+            with self.assertRaises(ConfigMissingError):
+                Config.require_int('assert', 'title_login')
+
+    def test_get_float非法值回退默认(self):
+        ini = '[tuning]\nwindow_poll_interval = 零点三\n'
+        with patch_config(ini_text=ini):
+            self.assertEqual(Config.get_float('tuning', 'window_poll_interval', 0.3), 0.3)
 
     def test_get_addkey把收件人键翻译成邮箱(self):
         with patch_config():

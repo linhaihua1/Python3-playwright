@@ -84,7 +84,8 @@ def parse_args(argv=None):
     parser.add_argument('--description', help='报告描述，不传则自动拼上构建信息')
 
     # ---- 用例选择 ----
-    parser.add_argument('--pattern', default='test*.py', help='用例文件匹配规则')
+    parser.add_argument('--pattern', default=None,
+                        help='用例文件匹配规则（默认取 config.ini [paths] case_pattern，缺省 test*.py）')
     parser.add_argument('--suite', default='full', choices=('full', 'smoke'),
                         help='full=全部用例；smoke=只跑 [ci] smoke_cases 配置的冒烟用例')
     parser.add_argument('--cases',
@@ -227,8 +228,9 @@ if __name__ == '__main__':
     # 1) 先按 --system 切换被测系统（会把 [system_名称] 翻译成环境变量覆盖，
     #    并可能给出该系统专属的用例 pattern）
     system_pattern = apply_system(args.system)
-    # 用例集优先级：命令行 --pattern > 系统配置 pattern > 默认 test*.py
-    pattern = args.pattern if args.pattern != 'test*.py' else (system_pattern or args.pattern)
+    # 用例集优先级：命令行 --pattern > 系统配置 pattern > config [paths] case_pattern
+    # （前两者都没给，就传 None 给 runner，由 runner 走配置解析）
+    pattern = args.pattern or system_pattern
 
     # 2) 命令行参数 -> 环境变量 -> config 覆盖（在 system 之后，保证命令行优先级最高）
     apply_runtime_overrides(args)

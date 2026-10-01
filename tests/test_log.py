@@ -160,8 +160,8 @@ class TestModuleLevelSingleton(unittest.TestCase):
     def test_log1是logger实例(self):
         self.assertIsInstance(log1, logging.Logger)
 
-    def test_log1名称为selenium(self):
-        self.assertEqual(log1.name, 'selenium')
+    def test_log1名称为uiauto(self):
+        self.assertEqual(log1.name, 'uiauto')
 
     def test_所有模块共用同一个log1(self):
         from Common.log import log1 as again

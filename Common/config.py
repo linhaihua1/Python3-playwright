@@ -17,10 +17,27 @@
 
 【config.ini 的段位说明】
     [environment]  被测环境：url、browser
-    [testcase]     用例参数：登录账号、上传文件、上传方式、上传表单字段
+    [testcase]     用例参数：登录账号、上传文件、上传方式、上传表单字段、查询关键字
+    [assert]       断言期望值：各页面的标题（换系统只改这里）
+    [system]       通用页面对象 GenericPage 的定位文案（占位符/按钮文字/成功标识）
     [report]       报告元信息：标题、文件名、执行人、描述
-    [sender]       发件人：邮箱、SMTP 授权码、显示名
+    [ci]           流水线开关：headless、element_timeout、smoke_cases、junit_xml 等
+    [paths]        目录与命名：img / Report / TestSuites / junit 文件名 / 用例收集规则
+    [tuning]       技术调优参数：视口、轮询间隔、重试间隔、各类页面稳定等待（全部可配，
+                   不配则用代码里的技术默认值 —— 这类默认值属于参数调优，不算业务数据）
+    [timing]       用例各步骤的页面等待秒数（同样"可配 + 技术默认"）
+    [notify]       群机器人通知：webhook、加签密钥、消息前缀
+    [sender]       发件人：邮箱、SMTP 授权码/服务器/端口、邮件正文模板
     [addressed]    收件人：键是姓名、值是邮箱（发送时遍历取值）
+
+【★ 零硬编码约定（本框架的数据纪律）】
+    业务数据 —— 系统标题、界面文案、账号、上传文件、表单字段、查询关键字、
+                报告元信息、邮件正文等 —— 一律用 Config.require(...) 读取：
+                配置缺失立刻抛 ConfigMissingError，中文报错会指明
+                「该在哪个段配哪个键」，绝不允许在代码里写兜底默认值。
+    技术参数 —— 超时秒数、轮询间隔、视口尺寸、目录名等，用 get/get_int/
+                get_float 读取，缺省允许保留代码默认值（调优用，不是业务）。
+    元素定位 —— 集中在 Common/elementPage.py（定位数据表，换系统时整表替换）。
 
 【新人必读：两种读取风格】
     推荐：Config.get('段', '键', '默认值')   —— 取不到就返回默认值，不抛异常
@@ -65,6 +82,27 @@ ENV_PREFIX = 'UI_'
 # 用来判断真/假的文本（配置项和布尔型环境变量共用）
 TRUE_VALUES = ('1', 'true', 'yes', 'on', 'y', 't')
 FALSE_VALUES = ('0', 'false', 'no', 'off', 'n', 'f', '')
+
+
+class ConfigMissingError(ValueError):
+    """必需的业务配置缺失。
+
+    继承 ValueError 是为了兼容既有调用链的错误处理
+    （如 open_browser 对"未配置地址"的 ValueError 语义）。
+
+    报错文案自带"怎么修"：指明段、键、对应的环境变量名，
+    新同事不用读文档也能把配置补上。
+    """
+
+    def __init__(self, section, key, hint=''):
+        self.section = section
+        self.key = key
+        self.hint = hint
+        message = ('缺少必需配置：config.ini 的 [%s] %s（对应环境变量 %s）'
+                   % (section, key, Config._env_name(section, key)))
+        if hint:
+            message = '%s。%s' % (message, hint)
+        super(ConfigMissingError, self).__init__(message)
 
 # ---------------------------------------------------------------------------
 # 模块级初始化：确定配置文件位置，建好可复用的解析器实例
@@ -164,6 +202,49 @@ class Config:
     config_read = get
 
     @staticmethod
+    def require(section, key, hint=''):
+        """读取**必需**配置项；缺失或为空则抛 ConfigMissingError。
+
+        与 get 的分工（本框架的零硬编码纪律）：
+            - 业务数据（标题/文案/账号/文件路径/关键字…）一律用 require，
+              代码里不留任何兜底默认值，缺配置就在启动阶段报清楚。
+            - 技术参数（超时、间隔、视口…）用 get/get_int/get_float，
+              允许代码里保留调优默认值。
+
+        :param section: 段名
+        :param key:     键名
+        :param hint:    额外提示（可选），会拼进报错文案
+        :return: 去掉首尾空白的字符串值
+        :raise ConfigMissingError: 该配置项不存在或为空
+        """
+        value = Config.get(section, key)
+        if value is None or str(value).strip() == '':
+            raise ConfigMissingError(section, key, hint)
+        return str(value).strip()
+
+    @staticmethod
+    def require_int(section, key, hint=''):
+        """读取必需整数配置（如超时秒数），缺失/非整数都报错。"""
+        raw = Config.require(section, key, hint)
+        try:
+            return int(raw)
+        except ValueError:
+            raise ConfigMissingError(section, key,
+                                     ('值必须是整数，当前为「%s」；%s' % (raw, hint)) if hint
+                                     else '值必须是整数，当前为「%s」' % raw)
+
+    @staticmethod
+    def require_float(section, key, hint=''):
+        """读取必需浮点配置，缺失/非数字都报错。"""
+        raw = Config.require(section, key, hint)
+        try:
+            return float(raw)
+        except ValueError:
+            raise ConfigMissingError(section, key,
+                                     ('值必须是数字，当前为「%s」；%s' % (raw, hint)) if hint
+                                     else '值必须是数字，当前为「%s」' % raw)
+
+    @staticmethod
     def get_bool(section, key, fallback=False):
         """读取开关型配置（true/false、1/0、yes/no 都认）。【在用】
 
@@ -193,6 +274,20 @@ class Config:
             return int(value)
         except (TypeError, ValueError):
             log1.error('%s下%s的值无法转为整数：%s' % (section, key, value))
+            return fallback
+
+    @staticmethod
+    def get_float(section, key, fallback=0.0):
+        """读取小数配置（如轮询间隔 0.3 秒），非法值回退到 fallback。【在用】
+
+        主要服务 [tuning] / [timing] 段的调优参数；
+        这类参数允许代码默认值（见类头「零硬编码约定」）。
+        """
+        value = Config.get(section, key, fallback)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            log1.error('%s下%s的值无法转为小数：%s' % (section, key, value))
             return fallback
 
     @staticmethod
@@ -287,20 +382,27 @@ class Config:
 
         用例里这样用：
             username, password = Config.get_account()
-        这样账号只存在于 config.ini，代码里不再硬编码。
+        账号只存在于 config.ini（或流水线注入的环境变量），代码里零硬编码；
+        属于业务数据，所以缺任何一项都直接报错并指明该配哪里。
         """
         return (
-            Config.get('testcase', 'login_username'),
-            Config.get('testcase', 'login_password'),
+            Config.require('testcase', 'login_username', '登录账号不能为空，流水线请用凭据注入环境变量'),
+            Config.require('testcase', 'login_password', '登录密码不能为空，流水线请用凭据注入环境变量'),
         )
 
     @staticmethod
-    def get_upload_file():
-        """取出待上传文件的绝对路径；未配置则返回 None。【在用】
+    def get_upload_file(required=True):
+        """取出待上传文件的绝对路径。【在用】
 
         支持配置里写 ~/video/demo.mp4 这种带用户目录的写法。
+        :param required: True（默认）时缺失/为空直接报错 —— 上传用例的前置数据；
+                         False 时保留旧语义（未配置返回 None），给预留工具方法用。
         """
-        value = Config.get('testcase', 'upload_file')
+        if required:
+            value = Config.require('testcase', 'upload_file',
+                                   '待上传文件路径不能为空（支持 ~ 开头的用户目录写法）')
+        else:
+            value = Config.get('testcase', 'upload_file')
         if not value:
             return None
         return os.path.abspath(os.path.expanduser(value))

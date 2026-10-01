@@ -33,7 +33,7 @@
 ==========================================================================
 """
 
-from Common.basePage import BasePage
+from Common.basePage import BasePage, NoSuchElementException
 from Common.config import Config
 from Common.log import log1
 
@@ -58,14 +58,19 @@ class GenericPage(BasePage):
             password_placeholder  密码输入框的占位提示文案，如「请输入密码」
             login_button_text     登录按钮的文字，如「登录」
             success_text          登录成功后页面必出现的文字，如「退出」/「工作台」
-                                  （用于等登录完成；留空则不校验）
+                                  （用于等登录完成；留空则改等加载遮罩消失）
+        这三项定位文案属于业务数据，缺失会直接抛 ConfigMissingError 指明该配哪个键。
         账号密码优先用参数，其次读 [testcase] login_username / login_password。
         """
-        username = username or Config.get('testcase', 'login_username', '')
-        password = password or Config.get('testcase', 'login_password', '')
-        user_ph = Config.get('system', 'username_placeholder', '请输入用户名')
-        pwd_ph = Config.get('system', 'password_placeholder', '请输入密码')
-        btn_text = Config.get('system', 'login_button_text', '登录')
+        username = username or Config.require('testcase', 'login_username')
+        password = password or Config.require('testcase', 'login_password')
+        # ★ 定位文案全部来自配置，代码里不写任何中文默认值（换系统只改配置）
+        user_ph = Config.require('system', 'username_placeholder',
+                                 '用户名输入框的占位提示文案（placeholder）')
+        pwd_ph = Config.require('system', 'password_placeholder',
+                                '密码输入框的占位提示文案（placeholder）')
+        btn_text = Config.require('system', 'login_button_text', '登录按钮上显示的文字')
+        # success_text 允许为空（空表示改等加载遮罩消失），所以不是 require
         success_text = Config.get('system', 'success_text', '')
 
         self.type_by_placeholder(user_ph, username)
@@ -73,11 +78,15 @@ class GenericPage(BasePage):
         # 密码框输入后回车，或点登录按钮；两者都尝试，兼容更多系统
         if not self.click_by_text(btn_text):
             log1.info('未找到文字为「%s」的登录按钮，尝试回车提交' % btn_text)
-            from selenium.webdriver.common.keys import Keys
-            self.get_element_by_attr('placeholder', pwd_ph).send_keys(Keys.ENTER)
+            pwd_box = self.get_element_by_attr('placeholder', pwd_ph)
+            if pwd_box is None:
+                raise NoSuchElementException(
+                    '既找不到登录按钮「%s」，也找不到密码输入框（placeholder=%s），无法提交登录'
+                    % (btn_text, pwd_ph))
+            pwd_box.press('Enter')   # 在密码框上按回车提交表单
         # 等登录完成：出现成功标识文字 或 等加载遮罩消失
         if success_text:
-            self.get_element_by_text(success_text, timeout=Config.getint('ci', 'element_timeout', 15))
+            self.get_element_by_text(success_text, timeout=self.timeout)
         else:
             self.wait_loading_gone()
         log1.info('通用登录流程完成')
@@ -96,7 +105,8 @@ class GenericPage(BasePage):
             if not ok:
                 log1.error('第 %d 级菜单「%s」点击失败' % (level, text))
                 return False
-            self.my_sleep(1)   # 等下一级菜单/页面渲染
+            # 等下一级菜单/页面渲染（技术参数，可配 [tuning] menu_render_wait）
+            self.my_sleep(Config.get_float('tuning', 'menu_render_wait', 1))
         log1.info('菜单导航完成：%s' % ' -> '.join(menu_path))
         return True
 

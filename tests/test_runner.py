@@ -217,13 +217,13 @@ class TestFindBrokenModules(unittest.TestCase):
     def test_识别FailedTest占位对象(self):
         # 注意：_FailedTest 的构造签名随 Python 版本变化
         # （3.11 起为 (method_name, exception)），这里只依赖公开行为
-        broken_case = _FailedTest('test_x', ImportError('No module named selenium'))
+        broken_case = _FailedTest('test_x', ImportError('No module named playwright'))
         suite = unittest.TestSuite([broken_case])
         found = runner.find_broken_modules(suite)
         self.assertEqual(len(found), 1)
         case, exc = found[0]
         self.assertIsInstance(exc, ImportError)
-        self.assertIn('selenium', str(exc))
+        self.assertIn('playwright', str(exc))
 
     def test_正常用例不会被误判(self):
         suite = unittest.TestSuite([samples.TwoPassCases('test_ok')])
@@ -443,9 +443,15 @@ class TestRunEnvErrors(_RunTestCase):
                                      cases='根本不存在的用例')
         self.assertEqual(summary['exit_code'], runner.EXIT_ENV_ERROR)
 
+    # 零硬编码改造后，[report] 四个键是业务数据（缺失即 exit 2），
+    # 自定义 ini_text 会整体替换 DEFAULT_INI，所以这些测试必须自带 [report]，
+    # 才能把"退出码问题"聚焦在各自真正要考察的点上。
+    _REPORT_INI = ('[report]\ntitle = 沙盒报告\nfilename = sandbox.html\n'
+                   'tester = bot\ndescription = 沙盒\n')
+
     def test_冒烟集为空时中止且不跑全量(self):
         """关键安全设计：冒烟集误删时若继续跑全量，会真实上传数据。"""
-        ini = '[ci]\nsmoke_cases =\n'
+        ini = self._REPORT_INI + '[ci]\nsmoke_cases =\n'
         root, cases_dir, _ = self.make_env(CASE_SOURCE_PASS, ini_text=ini)
         summary, _ = self.run_runner(tests_dir=cases_dir, pattern='demo_test.py',
                                      suite_kind='smoke')
@@ -454,7 +460,7 @@ class TestRunEnvErrors(_RunTestCase):
         self.assertIsNone(summary['report'])
 
     def test_冒烟模式只跑命中的用例(self):
-        ini = '[ci]\nsmoke_cases = test_a_pass\n'
+        ini = self._REPORT_INI + '[ci]\nsmoke_cases = test_a_pass\n'
         root, cases_dir, _ = self.make_env(CASE_SOURCE_PASS, ini_text=ini)
         summary, _ = self.run_runner(tests_dir=cases_dir, pattern='demo_test.py',
                                      suite_kind='smoke')
@@ -462,13 +468,43 @@ class TestRunEnvErrors(_RunTestCase):
         self.assertEqual(summary['tests_run'], 1)
 
     def test_显式cases参数覆盖冒烟配置(self):
-        ini = '[ci]\nsmoke_cases = test_a_pass\n'
+        ini = self._REPORT_INI + '[ci]\nsmoke_cases = test_a_pass\n'
         root, cases_dir, _ = self.make_env(CASE_SOURCE_PASS, ini_text=ini)
         summary, _ = self.run_runner(tests_dir=cases_dir, pattern='demo_test.py',
                                      suite_kind='smoke', cases='test_b_pass')
         self.assertEqual(summary['tests_run'], 1)
         names = [item['name'] for item in summary['cases']]
         self.assertEqual(names, ['test_b_pass'])
+
+    def test_缺报告元信息配置时退出码为2(self):
+        """零硬编码纪律的守卫用例：[report] 没配就不能蒙混出报告。"""
+        ini = '[environment]\nurl = http://x\n'   # 故意不含 [report]
+        root, cases_dir, _ = self.make_env(CASE_SOURCE_PASS, ini_text=ini)
+        summary, _ = self.run_runner(tests_dir=cases_dir, pattern='demo_test.py')
+        self.assertEqual(summary['exit_code'], runner.EXIT_ENV_ERROR)
+        self.assertIsNone(summary['report'])
+
+    def test_用例里抛ConfigMissingError改判为环境错误(self):
+        """setUpClass 的业务配置缺失落进 errors —— 必须归退出码 2，不能当用例失败。"""
+        source = (
+            'import unittest\n'
+            'from Common.config import ConfigMissingError\n'
+            'class DemoFail(unittest.TestCase):\n'
+            '    @classmethod\n'
+            '    def setUpClass(cls):\n'
+            '        raise ConfigMissingError("assert", "title_login", "登录页标题")\n'
+            '    def test_a(self):\n'
+            '        pass\n'
+        )
+        root, cases_dir, _ = self.make_env(source)
+        summary, _ = self.run_runner(tests_dir=cases_dir, pattern='demo_test.py')
+        self.assertEqual(summary['exit_code'], runner.EXIT_ENV_ERROR)
+
+    def test_普通断言失败仍是用例失败退出码1(self):
+        """与上一条对照：普通失败绝不能被误改判为环境错误。"""
+        root, cases_dir, _ = self.make_env(CASE_SOURCE_MIXED)
+        summary, _ = self.run_runner(tests_dir=cases_dir, pattern='demo_test.py')
+        self.assertEqual(summary['exit_code'], runner.EXIT_TEST_FAILED)
 
 
 if __name__ == '__main__':

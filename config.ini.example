@@ -1,76 +1,95 @@
 # ==========================================================================
-#  配置模板（新人阅读顺序：第 0 个）
+#  工程配置文件模板                                    新人阅读顺序：第 0 个
 # ==========================================================================
-#  【怎么用】
-#      cp config.ini.example config.ini      # Windows: copy config.ini.example config.ini
-#    然后按下面注释改成你自己的环境与账号。
+#  用法：复制为 config.ini 后按实际环境填写（config.ini 已加入 .gitignore）。
+#  本文件由 Common/config.py 读取；代码读取方式分两种（零硬编码纪律）：
+#    1) 业务数据（Config.require）：标题文案、账号、文件路径、断言期望、
+#       报告元信息、邮件文案等 —— **必须在这里配置**，缺失时程序直接报错
+#       并指明「该在哪个段配哪个键」，代码里没有任何兜底默认值。
+#    2) 技术参数（Config.get/get_int/get_float）：超时、轮询间隔、视口、
+#       目录名等 —— 这里写的值是"建议默认"，不配也能跑（代码里有等价默认值），
+#       列出来是为了让你知道每一项都可以按环境调优。
 #
-#  【为什么要有这个模板】
-#     真实的 config.ini 含明文账号密码，已被 .gitignore 排除、不入库。
-#     仓库里只保留这份"占位值"模板，保证新人 clone 下来知道该填什么。
-#     流水线上则完全不需要 config.ini —— 账号密码由 Jenkins 凭据注入环境变量，
-#     地址由构建参数传入（见 docs/CI-CD接入指南.md）。
-#
-#  【环境变量覆盖规则（CI/CD 关键）】
-#     任意配置项都可以被同名环境变量覆盖：UI_ + 段名 + _ + 键名（全大写）
-#       [environment] url            ->  UI_ENVIRONMENT_URL
-#       [testcase]    login_password ->  UI_TESTCASE_LOGIN_PASSWORD
-#       [ci]          headless       ->  UI_CI_HEADLESS
-#     环境变量优先于本文件。要整体关闭该机制：UI_ENV_OVERRIDE=false
+#  【安全提示】
+#   本文件可能包含明文账号密码与邮箱授权码。提交到代码仓库前，
+#   请确认 config.ini 已加入 .gitignore，真实值改用环境变量或流水线凭据注入。
 #
 #  【格式说明】
-#     - 以 # 开头的是注释
-#     - 键名区分大小写（Common/configOverWriter.py 特意关掉了自动小写转换）
-#     - 值里可以放心出现 %，解析器已关闭 % 插值，不会报错
+#   - 以 # 开头的是注释
+#   - 键名区分大小写（Common/configOverWriter.py 特意关掉了自动小写转换）
+#   - 值里可以放心出现 %、#、"、'，解析器已关闭插值与行内注释
+#
+#  【环境变量覆盖（CI/CD 用）】
+#   任意配置项都可以被同名环境变量覆盖，规则：UI_ + 段名 + _ + 键名（全大写）
+#     [environment] url            ->  UI_ENVIRONMENT_URL
+#     [testcase]    login_password ->  UI_TESTCASE_LOGIN_PASSWORD
+#     [assert]      title_login    ->  UI_ASSERT_TITLE_LOGIN
+#     [tuning]      viewport       ->  UI_TUNING_VIEWPORT
+#   环境变量优先于本文件。Jenkins 上账号密码请用凭据注入，不要写进本文件。
+#   要整体关闭该机制：设 UI_ENV_OVERRIDE=false
 # ==========================================================================
 
 
 # --------------------------------------------------------------------------
 # 被测环境：Common/basePage.open_browser() 会读这两项
+# 换环境时推荐不改本文件，而是在流水线/命令行传环境变量，例如：
+#   set UI_ENVIRONMENT_URL=http://测试环境地址/sso-portal/#/?redirect=/launch
 # --------------------------------------------------------------------------
 [environment]
-# 被测系统入口地址（统一门户登录页）
-# ⚠️ 建议指向测试环境；指向生产环境时跑全量用例会真实上传/报送数据
+# 被测系统入口地址（统一门户登录页）【必填】
+# ⚠️ 指向生产环境时跑全量用例会真实上传视频并提交报送单，执行前请确认！
+#    流水线里请务必通过 UI_ENVIRONMENT_URL 指向测试环境
 url = http://测试环境地址/sso-portal/#/?redirect=/launch
-# 浏览器类型：chrome / firefox / edge
-# 无需手动下载 driver —— Selenium 4 自带的 Selenium Manager 会自动匹配
+# 浏览器类型：chrome / firefox / edge（技术参数，默认 chrome）
+# 无需手动下载 driver —— Playwright 自带浏览器，一次性下载即可：
+#   python -m playwright install chromium
+# （chrome=Playwright 自带 Chromium；edge=调用系统 Edge 的 channel；
+#   firefox 需额外 python -m playwright install firefox）
 browser = chrome
 
 
 # --------------------------------------------------------------------------
 # 用例参数：TestSuites/testLogin.py 的 setUpClass 会读这里
-# 把账号和文件路径放在配置里，是为了换环境/换账号时不用改代码
+# 账号与测试数据全部集中在这里，代码里零硬编码；缺项直接报错指明该配哪个键
 # --------------------------------------------------------------------------
 [testcase]
-# 登录账号（流水线上由 Jenkins 凭据注入，不在这里填真实值）
+# 【必填】登录账号（流水线上由 Jenkins 凭据注入，不要把真实值提交进仓库）
 login_username = your_username
+# 【必填】登录密码（支持 % 等特殊字符，不会被插值解析）
 login_password = your_password
 
-# 待上传的视频文件：写绝对路径，也支持 ~/video/demo.mp4 这种用户目录写法
+# 【必填】待上传的视频文件：写绝对路径，也支持 ~/video/demo.mp4 用户目录写法
 # 文件不存在时，"上传视频"用例会直接失败并提示路径（冒烟子集不涉及此用例）
 upload_file = D:\videos\demo.mp4
 
-# 上传实现方式：
-#   send_keys  默认。直接给页面里隐藏的 input[type=file] 赋值，不弹系统对话框，
-#              速度快、可在无桌面环境的 CI 上运行，推荐
-#   autoit     点上传按钮弹出 Windows「打开」对话框，用 autoit 模拟键盘输入。
-#              需要 pip install PyAutoIt，且系统对话框标题必须是「打开」（中文系统）
-# 说明：send_keys 失败时会自动回退到 autoit，通常不用手动改这一项
-upload_mode = send_keys
+# 上传实现方式（技术参数，默认 set_input_files）：
+#   set_input_files  默认。直接给页面里隐藏的 input[type=file] 赋文件路径
+#                    （Playwright 原生赋值 API），不弹系统对话框，速度快、
+#                    可在无桌面环境下运行，推荐。
+#                    旧值名 send_keys 等价 —— 除 autoit 外的任何取值都走此分支
+#   autoit           点上传按钮弹出 Windows「打开」对话框，用 autoit 模拟键盘输入。
+#                    需要 pip install PyAutoIt，且有桌面环境（不能无头跑）
+# 说明：直接赋值失败时会自动回退到 autoit，通常不用手动改这一项
+upload_mode = set_input_files
 
-# 上传表单的三个字段
-video_author = your_username
+# 【走 autoit 时必填】系统文件对话框的窗口标题（随操作系统语言不同）
+# 中文系统是「打开」，英文系统是 Open；只在 autoit 分支被校验，平时留空不影响
+upload_dialog_title = 打开
+
+# 上传表单的三个字段（【必填】手机号、上报单位；
+# video_author 留空时自动用登录账号兜底 —— 合理联动，不算硬编码）
+video_author =
 phone = 13000000000
 reporting = 深圳
 
-# 关键字查询用例（test_5keyword）搜索的关键词
+# 【必填】关键字查询用例（test_5keyword）搜索的关键词
 # 对应环境变量：UI_TESTCASE_QUERY_KEYWORD
 query_keyword = 测试
 
 
 # --------------------------------------------------------------------------
-# 断言期望值：用例靠校验页面标题判定成功与否。
-# 不同系统的页面标题不同，集中放这里，改系统时只改配置、不改代码。
+# 断言期望值：用例靠校验页面标题判定成功与否。【三个键全部必填】
+# 不同系统的页面标题不同，集中放这里，换系统只改配置、不改代码。
 # 对应环境变量：UI_ASSERT_TITLE_LOGIN 等（UI_ + 段 + 键，全大写）
 # --------------------------------------------------------------------------
 [assert]
@@ -87,41 +106,53 @@ title_material = 素材库 - 云媒资系统
 #   本框架可适配党政 / 财务 / ERP / 商城 / 数据中台等绝大多数 Web 系统。
 #   方法一（推荐，零代码）：用 GenericPage，只靠本 [system] 段的「文案特征」
 #           定位元素 —— 用户名/密码框的 placeholder、登录按钮文字、成功标识。
-#           换系统只改这里，不改任何代码。
+#           换系统只改这里，不改任何代码。前三项【必填】，缺失直接报错。
 #   方法二（复杂系统）：为该系统新建 PageObject/xxxPage.py + elementPage，
 #           复用 Common/basePage.py 的全部通用能力（含跨系统通用方法）。
 #   对应环境变量：UI_SYSTEM_USERNAME_PLACEHOLDER 等（UI_ + 段 + 键，全大写）
 # --------------------------------------------------------------------------
 [system]
-# 用户名输入框的占位提示文案（placeholder）。登录页那个灰色提示文字。
+# 【必填】用户名输入框的占位提示文案（placeholder）。登录页那个灰色提示文字。
 username_placeholder = 请输入用户名
-# 密码输入框的占位提示文案
+# 【必填】密码输入框的占位提示文案
 password_placeholder = 请输入密码
-# 登录按钮上显示的文字（click_by_text 按它点击；找不到会自动回车提交）
+# 【必填】登录按钮上显示的文字（click_by_text 按它点击；找不到会自动回车提交）
 login_button_text = 登录
 # 登录成功后页面上必然出现的文字，用来等登录完成。如「退出」「工作台」「首页」。
-# 留空则改为等加载遮罩消失。
+# 此项**允许留空**：留空则改为等加载遮罩消失。
 success_text =
 # 元素定位默认超时（秒），与 [ci] element_timeout 保持一致即可
 element_timeout = 15
 
 
 # --------------------------------------------------------------------------
-# 报告元信息：Common/runner.py 读取；命令行参数优先级高于这里
+# 报告元信息：Common/runner.py 读取。四个键全部【必填】（业务数据），
+# 命令行参数 --title/--filename/--tester/--description 优先级高于这里。
+# 例如 python run.py --title 冒烟测试 会覆盖 title
 # --------------------------------------------------------------------------
 [report]
-title = 融媒体生产系统webUI自动化测试报告
-filename = 融媒体生产系统webUI自动化测试报告.html
+title = UI 自动化测试报告
+filename = UI自动化测试报告.html
 tester = ui-auto
-description = UI自动化测试！！
+description = UI 自动化测试
+
+
+# --------------------------------------------------------------------------
+# 备用入口 entrance.py 的报告主题（换主题只改这里，代码零硬编码）
+# title【使用 entrance.py 时必填】：报告标题，同时用作报告文件名
+# description 可选：报告描述
+# --------------------------------------------------------------------------
+[entrance]
+title = 党建云生产系统Ui自动化测试报告
+description = 党建云生产系统 UI 自动化测试
 
 
 # --------------------------------------------------------------------------
 # CI/CD 流水线相关：Common/basePage.py、Common/runner.py 读取
-# 本机开发保持默认即可；Jenkins 上用环境变量覆盖
+# 本机开发时保持默认即可；Jenkins 上通常用环境变量覆盖（见文件头说明）
 # --------------------------------------------------------------------------
 [ci]
-# 是否无头运行（不开浏览器界面）
+# 是否无头运行（不开浏览器界面）。
 #   false 本机开发用，能看见浏览器在操作，便于调试
 #   true  流水线必须开！Jenkins 节点没有桌面环境，有头模式起不来
 # 对应环境变量：UI_CI_HEADLESS
@@ -131,44 +162,147 @@ headless = false
 # 对应环境变量：UI_CI_ELEMENT_TIMEOUT
 element_timeout = 15
 
-# 隐式等待（秒）。影响 find_element 的轮询时长
+# 隐式等待（秒）。Playwright 迁移后保留兼容：动作等待统一由 element_timeout 控制
+# （Playwright 内建自动等待，没有独立的隐式等待概念），本项仅作记录与旧配置兼容
 # 对应环境变量：UI_CI_IMPLICIT_WAIT
 implicit_wait = 5
 
-# 冒烟用例：只跑这些用例（按用例方法名匹配，逗号分隔，支持部分匹配）
+# 冒烟用例：只跑这些用例（按用例方法名匹配，逗号分隔，支持部分匹配）。
 # 选取原则：**不产生数据副作用**的前缀用例。
 # 当前 6 条用例是一条串行业务流，后 3 条会真实上传视频、提交报送单，
 # 所以冒烟只取前 3 条 —— 验证"登录链路 + 页面加载"是否正常。
-# 用法：python run.py --suite smoke
+# 用法：python run.py --suite smoke   或流水线参数 TEST_SUITE=smoke
+# 对应环境变量：UI_CI_SMOKE_CASES
 smoke_cases = test_1login,test_2select_scxt,test_3material
 
-# 操作失败自动重试次数（应对元素过期/渲染慢/点击被挡等偶发失败，降低 flaky）。
-# BasePage.safe_click / safe_type 会用到；0 表示不重试。
-# 对应环境变量：UI_CI_RETRY_TIMES
+# 操作失败自动重试次数（降低偶发失败 flaky）；safe_click/safe_type 用到
 retry_times = 2
 
-# JUnit XML 结果文件路径（相对工程根目录）
-# Jenkins 的 junit 插件靠它判定构建成功/失败，**不要删**
+# JUnit XML 结果文件路径（相对工程根目录）。
+# Jenkins 的 junit 插件靠它判定构建成功/失败。
+# 留空则按 [paths] report_dir + junit_filename 自动拼出；
+# 若自定义了 [paths] 目录名，建议清空本项让两者保持一致。
 # 对应环境变量：UI_CI_JUNIT_XML
-junit_xml = Report/junit-results.xml
+junit_xml =
 
-# 额外的 Chrome 启动参数（逗号分隔），一般留空
+# 额外的浏览器启动参数（逗号分隔，仅 chrome/edge 生效），一般留空。
+# 容器里跑时可加 --disable-images 加速，或 --allow-insecure-localhost 等
 # 对应环境变量：UI_CI_EXTRA_CHROME_ARGS
 extra_chrome_args =
 
-# Chrome 可执行文件的绝对路径。留空 = 用系统默认位置（Windows/macOS 本机不用填）。
-# 容器镜像（见仓库根 Dockerfile）里 chromium 装在 /usr/bin/chromium，需要显式指定
+# 浏览器可执行文件的绝对路径（Playwright 的 executable_path）。
+# 留空 = 用 Playwright 自带的 Chromium（推荐，pip 装完执行
+# python -m playwright install chromium 即可，不依赖系统安装的浏览器）。
+# 仅当确认要用系统 chromium（如某些容器镜像）时才填，例如 /usr/bin/chromium
 # 对应环境变量：UI_CI_CHROME_BINARY
 chrome_binary =
 
 
 # --------------------------------------------------------------------------
-# 邮件发件人：Common/sentMail.py 读取（需要用 --mail 发报告时才配）
-# password 填 SMTP 授权码（去 QQ 邮箱「设置-账户」开启 SMTP 服务后生成），
-# 注意不是 QQ 登录密码！
-# smtp_host / smtp_port 不填时，默认按 QQ 邮箱（smtp.qq.com:465，SSL）处理；
-# 用其它邮箱（如 163 / 企业邮箱）时改成对应服务器与端口即可。
-# 对应环境变量：UI_SENDER_SMTP_HOST / UI_SENDER_SMTP_PORT
+# 【paths】目录与产出物命名（技术参数：可配，代码里有相同默认值）
+# 想改工程产出目录的名字/位置时改这里，代码不用动。
+# 日志目录例外：它由环境变量 UI_LOG_DIR 整体挪走（读取时机早于配置文件，
+# 见 Common/log.py 与 docs/使用文档.md）。
+# --------------------------------------------------------------------------
+[paths]
+# 用例收集目录（相对工程根）
+testcases_dir = TestSuites
+# 用例文件名匹配规则（--pattern 未显式指定时使用）
+case_pattern = test*.py
+# HTML 报告与 JUnit XML 的输出目录（相对工程根）
+report_dir = Report
+# JUnit XML 文件名（在 report_dir 下）
+junit_filename = junit-results.xml
+# 失败截图根目录（相对工程根，内部再按日期分子目录）
+img_dir = img
+
+
+# --------------------------------------------------------------------------
+# 【tuning】浏览器与框架的调优参数（技术参数：可配，代码里有相同默认值）
+# 慢环境（CI 容器、远程浏览器）可调大间隔/超时；快环境可调小提速。
+# --------------------------------------------------------------------------
+[tuning]
+# 无头模式下的视口尺寸（有头模式跟随真实窗口 --start-maximized）。
+# 支持 1920x1080 / 1920,1080 / 1920 1080 写法
+viewport = 1920x1080
+# 浏览器语言
+browser_locale = zh-CN
+# 等新标签页注册的轮询步长（秒）——切窗口时事件循环的泵间隔
+window_poll_interval = 0.3
+# 等加载遮罩消失的轮询步长（秒）
+loading_poll_interval = 0.3
+# 「加载遮罩」的特征选择器（xpath）。系统有自己的 loading 类名时可整体替换
+loading_selector = //*[contains(@class,"loading") or contains(normalize-space(.),"加载中")]
+# safe_click/safe_type 重试之间的喘息间隔（秒）
+retry_interval = 1
+# 输入内容后、按回车前的稳定等待（秒）
+enter_settle = 0.5
+# 给 file 控件赋值文件后的稳定等待（秒）
+upload_settle = 1
+# 通用页面对象逐级点菜单后，等下一级渲染的秒数
+menu_render_wait = 1
+# 基类 switch_menue（预留的三级菜单方法）进入前的初始等待秒数
+switch_menu_wait = 3
+# popout 等原生浏览器弹窗的默认等待秒数
+dialog_timeout = 5
+# autoit 文件对话框：出现等待上限 / 输入后与点击后的喘息秒数
+autoit_timeout = 3
+autoit_input_settle = 1
+autoit_click_settle = 2
+# 群机器人通知的 HTTP 请求超时（秒）
+notify_timeout = 10
+
+
+# --------------------------------------------------------------------------
+# 【timing】用例各步骤的"页面节奏"等待秒数（技术参数：可配 + 代码默认）
+# 用途：慢环境整体调大、快环境调小提速；换前端框架后渲染节奏变了也只改这里。
+# 这些等待是"无法用条件判断的动画/异步渲染"兜底，能判断的都已走自动等待。
+# --------------------------------------------------------------------------
+[timing]
+# 点「发布系统」切到新标签页后，首屏渲染
+workbench_render = 2
+# 工作台左侧菜单异步加载
+menu_load = 3
+# 点进素材库后的首屏渲染
+material_render = 2
+# 选完文件后，上传组件识别文件
+upload_recognize = 3
+# 点「上 传」后，等上传进度走完
+upload_progress = 5
+# 点「查 询」后，等结果返回
+query_result = 3
+# 报送前刷新页面后，列表重新渲染
+refresh_render = 5
+# 点「保 存」后，报送落库
+submit_render = 2
+# 点「重 置」后，输入框清空
+reset_settle = 1
+
+
+# --------------------------------------------------------------------------
+# 群机器人通知（run.py --notify 或 [notify] enabled=true 时推送）
+# webhook 未配置时 --notify 只会跳过并提示，不影响测试结果
+# --------------------------------------------------------------------------
+[notify]
+# 是否默认启用通知（--notify 开关优先级更高）
+enabled = false
+# 机器人 webhook 地址：钉钉 oapi.dingtalk.com / 企业微信 qyapi.weixin.qq.com
+# 会自动按域名识别消息格式；其它地址按通用 JSON POST 发送
+webhook =
+# 钉钉加签密钥（机器人安全设置选了「加签」时必填），不启用加签则留空
+secret =
+# 消息前缀标题；留空自动用 [report] title
+title =
+
+
+# --------------------------------------------------------------------------
+# 邮件发件人：Common/sentMail.py 读取
+# 下面三个值目前是占位符，直接用 --mail 发信会失败并提示"未配置 [sender]"，
+# 需要真实发信时改为：
+#   username = 你的昵称
+#   email    = 你的QQ邮箱@qq.com
+#   password = SMTP授权码（去 QQ 邮箱「设置-账户」开启 SMTP 服务后生成，
+#             注意不是 QQ 登录密码！）
 # --------------------------------------------------------------------------
 [sender]
 username = 发件人
@@ -176,6 +310,10 @@ email = 发件人邮箱
 password = SMTP授权码
 smtp_host = smtp.qq.com
 smtp_port = 465
+# 邮件主题/正文模板（业务文案，换措辞只改这里）。
+# 支持两个占位符：{date} 当天日期（如 20261001）、{filename} 报告文件名
+mail_subject = {date} {filename}
+mail_body = 附件为{filename}
 
 
 # --------------------------------------------------------------------------
@@ -187,32 +325,15 @@ smtp_port = 465
 
 
 # --------------------------------------------------------------------------
-# 群机器人通知（run.py --notify 时使用）：钉钉 / 企业微信 / 通用 webhook
-#   跑完把结果推送到群，不用打开 Jenkins 也能第一时间知道成败。
-#   对应环境变量：UI_NOTIFY_WEBHOOK / UI_NOTIFY_SECRET / UI_NOTIFY_TITLE
+# 【多系统切换】run.py --system 名称 一键切换被测系统（可选功能）
+# 段名规则：system_ + 系统名（全小写），键都可被同名环境变量覆盖。
+# 支持的键（任一可选，缺了就不覆盖、沿用全局配置）：
+#   url / browser / username / password / headless / pattern
+# 注意：--system 只负责"环境变量注入"这一层；账号密码等必填业务数据
+#       最终仍要能在对应段取到值，缺配置时用例启动即报错。
 # --------------------------------------------------------------------------
-[notify]
-# 机器人 webhook 地址（钉钉/企业微信机器人设置里复制）；不填则 --notify 不推送
-webhook =
-# 钉钉机器人若开启了「加签」安全设置，把密钥填这里；没开启加签则留空
-secret =
-# 推送消息的标题前缀
-title = UI 自动化测试
-
-
-# --------------------------------------------------------------------------
-# 多系统配置：一套框架管理多个被测系统。
-#   每个系统建一个 [system_名称] 段，用 python run.py --system 名称 一键切换。
-#   可用键：url / browser / username / password / headless / pattern(用例文件名匹配)
-#   没写的键沿用全局配置；密码同样可用环境变量 UI_TESTCASE_LOGIN_PASSWORD 覆盖。
-#   下面是两个示例，按需复制修改。
-# --------------------------------------------------------------------------
-# [system_erp]
-# url = http://erp测试环境地址/login
-# username = erp_tester
-# password = your_erp_password
-# pattern = testErp*.py
-#
-# [system_mall]
-# url = http://商城测试环境/
-# pattern = testMall*.py
+# [system_example]
+# url = http://另一系统地址/login
+# username = another_user
+# password = another_pwd
+# pattern = testAnother*.py

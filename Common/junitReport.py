@@ -53,6 +53,7 @@ import xml.etree.ElementTree as ET
 # 这样 HTMLTestRunner 可以直接拿本类当 resultclass 使用。
 from Common.HTMLTestReportCN import _TestResult
 from Common.dir_config import ensure_dir
+from Common.config import Config
 from Common.log import log1
 
 # 单条用例的标准输出最多记录多少字符（防止日志把 XML 撑得过大）
@@ -161,13 +162,15 @@ def _timestamp(epoch=None):
     return time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(epoch or time.time()))
 
 
-def write_junit_xml(result, path, suite_name='UI Automation Test', properties=None,
-                    run_start=None):
+def write_junit_xml(result, path, suite_name=None, properties=None,
+                     run_start=None):
     """把 JUnitResult 的结果写成 JUnit XML 文件。
 
     :param result:     JUnitResult 实例
     :param path:       XML 输出路径（目录不存在会自动创建）
-    :param suite_name: 顶层套件名，流水线页面上会显示它
+    :param suite_name: 顶层套件名，流水线页面上会显示它；
+                       不传则读 config.ini -> [report] title（业务名不写死在代码，
+                       runner 正常流程总会显式传入，这里只是独立调用时的兜底）
     :param properties: 额外属性字典，例如构建号、分支、被测地址（会展示在 Jenkins 报告页）
     :param run_start:  整体开始时间戳，用于计算总耗时与 timestamp
     :return: 实际写入的文件路径
@@ -175,6 +178,8 @@ def write_junit_xml(result, path, suite_name='UI Automation Test', properties=No
     结构约定：按「测试类」拆成多个 <testsuite>，每个类里的用例放一个 <testcase>。
     这样 Jenkins 的测试趋势图能按类维度展示，定位问题更快。
     """
+    if not suite_name:
+        suite_name = Config.get('report', 'title') or 'TestSuite'
     # ---- 1. 汇总统计（来自 unittest 的标准统计字段）----
     cases = result.cases
     total = result.testsRun

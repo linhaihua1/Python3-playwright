@@ -70,7 +70,7 @@ class Element1:
     # ==================== 业务动作一：上传视频 ====================
     # 页面上可见的"上传文件"按钮（是个 label，点它会弹出 Windows 系统对话框）
     uplaodbutton = ['xpath', "//label[@id='global-uploader-btn']/i"]   # 注：拼写保留原样，别单独改，loginPage 在引用
-    # 隐藏在组件内部的文件控件。给它的 send_keys(文件路径) 就能完成选择，
+    # 隐藏在组件内部的文件控件。直接给它赋文件路径（Playwright set_input_files）就能完成选择，
     # 从而绕开系统对话框 —— 这是工程默认的上传方式，见 basePage.files_upload()
     FileInput = ['xpath', "//input[@type='file']"]
     videoauthor = ['xpath', "//main/form/div[2]/div/div/input"]   # 上传表单：视频作者

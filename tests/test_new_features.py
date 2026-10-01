@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tests.helpers import patch_config, patch_dirs, FakeDriver, FakeElement
+from tests.helpers import patch_config, patch_dirs, FakePage, PlaywrightError
 from Common import dataDriver, notifier
 from Common.basePage import BasePage
 
@@ -136,7 +136,7 @@ class TestRetry(unittest.TestCase):
         self._cfg.__exit__(None, None, None)
 
     def test_首次成功不重试(self):
-        page = BasePage(driver=FakeDriver(), timeout=1)
+        page = BasePage(driver=FakePage(), timeout=1)
         calls = [0]
 
         def fn():
@@ -147,29 +147,29 @@ class TestRetry(unittest.TestCase):
         self.assertEqual(calls[0], 1)
 
     def test_瞬时错误重试后成功(self):
-        from selenium.common.exceptions import StaleElementReferenceException
-        page = BasePage(driver=FakeDriver(), timeout=1)
+        """瞬时错误（超时、点击被挡、元素未就绪等 Playwright 异常）由框架层
+        统一重试兜底 —— Playwright 的 Locator 永不过期，无旧句柄失效类问题。"""
+        page = BasePage(driver=FakePage(), timeout=1)
         page.DEFAULT_RETRY = 2
         calls = [0]
 
         def fn():
             calls[0] += 1
             if calls[0] < 3:
-                raise StaleElementReferenceException('stale')
+                raise PlaywrightError('transient')
             return 'ok'
 
         self.assertEqual(page.retry(fn), 'ok')
         self.assertEqual(calls[0], 3)
 
     def test_全部失败后抛出最后异常(self):
-        from selenium.common.exceptions import WebDriverException
-        page = BasePage(driver=FakeDriver(), timeout=1)
+        page = BasePage(driver=FakePage(), timeout=1)
         page.DEFAULT_RETRY = 1
-        with self.assertRaises(WebDriverException):
-            page.retry(lambda: (_ for _ in ()).throw(WebDriverException('fail')))
+        with self.assertRaises(PlaywrightError):
+            page.retry(lambda: (_ for _ in ()).throw(PlaywrightError('fail')))
 
     def test_断言错误不重试(self):
-        page = BasePage(driver=FakeDriver(), timeout=1)
+        page = BasePage(driver=FakePage(), timeout=1)
         page.DEFAULT_RETRY = 3
         calls = [0]
 

@@ -41,6 +41,9 @@ import urllib.request
 from Common.config import Config
 from Common.log import log1
 
+# 通知 HTTP 请求的技术默认超时（秒），可被 [tuning] notify_timeout 覆盖
+DEFAULT_NOTIFY_TIMEOUT = 10
+
 
 def _is_dingtalk(webhook):
     return 'oapi.dingtalk.com' in webhook
@@ -60,8 +63,13 @@ def _ding_sign(secret):
     return timestamp, sign
 
 
-def _post(url, payload, timeout=10):
-    """发一个 JSON POST，返回 (ok, message)。网络异常不抛，只记日志。"""
+def _post(url, payload, timeout=None):
+    """发一个 JSON POST，返回 (ok, message)。网络异常不抛，只记日志。
+
+    :param timeout: 秒；不传则取 [tuning] notify_timeout（默认 10）
+    """
+    if timeout is None:
+        timeout = Config.get_int('tuning', 'notify_timeout', DEFAULT_NOTIFY_TIMEOUT)
     data = json.dumps(payload).encode('utf-8')
     req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
     try:
@@ -99,7 +107,9 @@ def notify(summary, webhook=None, secret=None, title=None):
         log1.info('未配置通知 webhook（config.ini [notify] webhook），跳过推送')
         return False
     secret = secret if secret is not None else Config.get('notify', 'secret', '')
-    title = title or Config.get('notify', 'title', 'UI 自动化测试')
+    # 标题属于业务文案：优先 [notify] title，缺省回退到报告标题（同样来自配置），
+    # 代码里不留任何写死的中文默认值。
+    title = title or Config.get('notify', 'title', '') or Config.get('report', 'title', '')
 
     text = _build_message(summary, title)
     url = webhook

@@ -95,14 +95,25 @@ class TestSetUpClass(unittest.TestCase):
         self._config.__exit__(None, None, None)
 
     def test_参数全部来自配置(self):
+        """setUpClass 的业务数据只能来自配置：get/require 两条通道都要桩。
+
+        零硬编码改造后，phone/reporting/query_keyword/title_* 走 Config.require
+        （缺失即报错），video_author 走 Config.get（留空回退账号名）。
+        """
         fake_config = mock.MagicMock()
         fake_config.get_account.return_value = ('cfg_user', 'cfg_pwd')
         fake_config.get_upload_file.return_value = '/tmp/演示.mp4'
         fake_config.get.side_effect = lambda section, key, *rest: {
             ('testcase', 'video_author'): '作者',
+        }.get((section, key))
+        fake_config.require.side_effect = lambda section, key, *rest: {
             ('testcase', 'phone'): '13900000000',
             ('testcase', 'reporting'): '广州',
-        }.get((section, key))
+            ('testcase', 'query_keyword'): '单元关键字',
+            ('assert', 'title_login'): '配置门户',
+            ('assert', 'title_workbench'): '配置工作台',
+            ('assert', 'title_material'): '配置素材库',
+        }[(section, key)]   # 没登记的键直接 KeyError：防止漏桩把测试蒙过去
 
         fake_base = mock.MagicMock()
         fake_driver = mock.MagicMock(name='driver')
@@ -119,10 +130,30 @@ class TestSetUpClass(unittest.TestCase):
         self.assertEqual(TestLogin.video_author, '作者')
         self.assertEqual(TestLogin.phone, '13900000000')
         self.assertEqual(TestLogin.reporting, '广州')
+        self.assertEqual(TestLogin.query_keyword, '单元关键字')
+        self.assertEqual(TestLogin.title_login, '配置门户')
+        self.assertEqual(TestLogin.title_material, '配置素材库')
         self.assertEqual(TestLogin.driver, fake_driver)
         self.assertEqual(fake_base.open_browser.call_count, 1,
                          '整个类只应打开一次浏览器')
         fake_login_page.assert_called_once_with(fake_driver)
+
+    def test_业务配置缺失时前置直接失败(self):
+        """require 语义：断言标题没配 -> setUpClass 抛 ConfigMissingError，
+        绝不带着 None 期望值往下跑（零硬编码纪律的守卫用例）。"""
+        from Common.config import ConfigMissingError
+        fake_config = mock.MagicMock()
+        fake_config.get_account.return_value = ('u', 'p')
+        fake_config.get_upload_file.return_value = '/tmp/a.mp4'
+        fake_config.require.side_effect = ConfigMissingError('assert', 'title_login')
+
+        fake_base = mock.MagicMock()
+        fake_base.open_browser.return_value = mock.MagicMock()
+        with mock.patch.object(login_suite, 'Config', fake_config), \
+                mock.patch.object(login_suite, 'BasePage', return_value=fake_base), \
+                mock.patch.object(login_suite, 'LoginPage'):
+            with self.assertRaises(ConfigMissingError):
+                TestLogin.setUpClass()
 
     def test_视频作者缺省时回退为账号名(self):
         fake_config = mock.MagicMock()
@@ -195,6 +226,12 @@ class TestCaseBodiesAreWired(unittest.TestCase):
         case.video_author = 'a'
         case.phone = '1'
         case.reporting = 'r'
+        case.query_keyword = 'kw'
+        # 断言期望值不再写死在代码里（类属性默认 None），真实跑用例体前
+        # 必须像 setUpClass 那样从"配置"灌入这些值
+        case.title_login = title
+        case.title_workbench = title
+        case.title_material = title
         case.driver = mock.MagicMock()
         case.login_page = mock.MagicMock()
         case.login_page.get_title.return_value = title
@@ -225,9 +262,11 @@ class TestCaseBodiesAreWired(unittest.TestCase):
 
     def test_用例6刷新后报送(self):
         case = self._run_case('test_6submitted')
+        # 迁移 Playwright 后，刷新改走页面对象继承的 BasePage.refresh()（page.reload），
+        # 不再绕过分层直接 self.driver.refresh() —— 因为切标签页后旧 driver 引用
+        # 不会自动指向新页面，直接刷新会刷错标签页。断言随之更新。
+        case.login_page.refresh.assert_called_once()
         case.login_page.submitted.assert_called_once()
-        self.assertEqual(case.driver.refresh.call_count, 1,
-                         '报送前必须刷新，确保列表里有刚上传的素材')
 
 
 class TestModuleHygiene(unittest.TestCase):

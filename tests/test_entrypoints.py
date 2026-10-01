@@ -57,7 +57,8 @@ class TestRunArgs(_EntryTestCase):
 
     def test_默认值(self):
         args = self.module.parse_args([])
-        self.assertEqual(args.pattern, 'test*.py')
+        self.assertIsNone(args.pattern,
+                          '不传时应为 None：由 runner 回落 [paths] case_pattern，入口不写死匹配规则')
         self.assertEqual(args.suite, 'full')
         self.assertIsNone(args.headless, '不传时应为 None，表示沿用 config.ini 配置')
         self.assertIsNone(args.title)
@@ -219,8 +220,11 @@ class TestEntrance(_EntryTestCase):
     MODULE_NAME = 'entrance_entry'
     MODULE_FILE = ENTRANCE_PY
 
-    def test_标题常量存在(self):
-        self.assertIn('党建云', self.module.DANGJIAN_TITLE)
+    def test_标题从配置读取不写死在代码(self):
+        """零硬编码改造后，备用入口不再有写死的业务标题常量。"""
+        with patch_config():
+            from Common.config import Config
+            self.assertEqual(Config.require('entrance', 'title'), '备用入口测试报告')
 
     def test_导入时不执行测试(self):
         """加载模块本身不应触发任何测试执行（靠 __main__ 保护）。"""
@@ -233,7 +237,11 @@ class TestEntrance(_EntryTestCase):
             source = fp.read()
         self.assertIn("if __name__ == '__main__':", source)
         self.assertIn('runner.run(', source)
-        self.assertIn('DANGJIAN_TITLE', source)
+        # 标题改为配置驱动：必须从 [entrance] 读；写死的标题常量（DANGJIAN_TITLE）应已移除。
+        # 注意 docstring 里作为历史说明提到具体系统名是允许的，禁止的是代码里的标题赋值。
+        self.assertIn("Config.require('entrance', 'title'", source)
+        self.assertNotIn('DANGJIAN_TITLE', source,
+                         '业务标题不应作为常量写死在 entrance.py，应改从 [entrance] 配置读')
         self.assertIn('sys.exit(summary', source)
 
 

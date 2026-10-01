@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 ==========================================================================
- 单元测试公共基座（桩对象 + 隔离工具）
+ 单元测试公共基座（桩对象 + 隔离工具）—— Playwright 版
 ==========================================================================
 
 【这个文件提供什么】
-    1. FakeElement / FakeDriver —— 假的 Selenium 元素与浏览器。
-       让 BasePage 的代码"以为自己真的在操作浏览器"，但实际只是记录调用，
-       从而使单元测试可以在无浏览器、无桌面的环境下毫秒级跑完。
+    1. FakeElement / FakeLocator / FakePage / FakePlaywrightFactory ——
+       假的 Playwright 元素与浏览器。让 BasePage 的代码"以为自己真的在操作浏览器"，
+       但实际只是记录调用，从而使单元测试可以在无浏览器、无桌面的环境下毫秒级跑完。
+       桩对象的接口形状与 playwright.sync_api 一致，BasePage 不需要知道真假。
     2. patch_config()  —— 把工程配置重定向到临时 config.ini，测读写不碰真文件。
     3. patch_dirs()    —— 把 Logs / img / Report / 用例目录重定向到临时目录。
     4. make_sandbox()  —— 临时沙盒工程（config.ini + 用例包），
@@ -24,7 +25,9 @@
         def test_something(self):
             with patch_config() as ini:          # 需要配置时
                 with patch_dirs() as root:       # 需要文件产出时
-                    ...                          # 用 FakeDriver 构造对象
+                    page = FakePage()            # 假浏览器（Playwright Page 形状）
+                    bp = BasePage(driver=page)
+                    ...
 ==========================================================================
 """
 
@@ -43,12 +46,10 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from selenium.common.exceptions import (   # noqa: E402  必须在 sys.path 处理之后导入
-    NoSuchElementException,
-    TimeoutException,
-    WebDriverException,
+from playwright.sync_api import (   # noqa: E402  必须在 sys.path 处理之后导入
+    Error as PlaywrightError,
+    TimeoutError as PlaywrightTimeoutError,
 )
-from selenium.webdriver.common.by import By   # noqa: E402
 
 from Common.configOverWriter import ConfigOverWrite   # noqa: E402
 
@@ -69,16 +70,34 @@ browser = chrome
 login_username = unit_user
 login_password = p%ss%word
 upload_file = ~/video/demo.mp4
-upload_mode = send_keys
+upload_mode = set_input_files
+upload_dialog_title = 打开
 video_author = 张三
 phone = 13800000000
 reporting = 深圳
+query_keyword = 单元关键字
+
+[assert]
+title_login = 单元门户
+title_workbench = 单元工作台
+title_material = 单元素材库
+
+[system]
+username_placeholder = 请输入用户名
+password_placeholder = 请输入密码
+login_button_text = 登录
+success_text =
+element_timeout = 7
 
 [report]
 title = 单元测试报告
 filename = unit-report.html
 tester = unit-tester
 description = 单元测试描述
+
+[entrance]
+title = 备用入口测试报告
+description = 备用入口描述
 
 [ci]
 headless = false
@@ -88,6 +107,11 @@ smoke_cases = test_1login,test_2select_scxt
 junit_xml = Report/junit-results.xml
 extra_chrome_args =
 chrome_binary =
+
+[paths]
+report_dir = Report
+junit_filename = junit-results.xml
+img_dir = img
 
 [sender]
 username = 单元测试发件人
@@ -336,64 +360,223 @@ class DemoSkip(unittest.TestCase):
 
 
 # ==========================================================================
-# 四、假 Selenium 对象
+# 四、假 Playwright 对象
+#   形状对齐 playwright.sync_api：
+#     Page.locator(sel) -> Locator（惰性），动作在执行瞬间才真正定位。
+#     桩对象所有动作只记录到 calls/... 列表，可按参数注入异常。
+#   "找不到元素"的模拟方式：FakePage(find_error=PlaywrightTimeoutError('gone'))
+#     -> wait_for() 抛该异常、count() 返回 0 —— 与真实 Playwright 行为一致。
+#   注意坑（沿用旧基座的约定）：FakePage(element=None) 会被替换成默认
+#     FakeElement()，模拟"找不到"必须用 find_error，不能传 element=None。
 # ==========================================================================
 class FakeElement:
-    """假的 WebElement。所有动作只记录到 calls，可指定某动作抛异常。"""
+    """假的 Locator 动作面。所有动作只记录，可指定某动作抛异常。
 
-    def __init__(self, text='', displayed=True, click_error=None,
-                 send_keys_error=None, clear_error=None):
+    记录字段：
+        calls            动作名序列，如 ['clear', 'fill', 'click']
+        filled           fill() 收到的值
+        pressed          press() 收到的按键
+        input_files      set_input_files() 收到的路径
+        evaluates        evaluate() 收到的脚本（对应旧基座的 driver.scripts）
+        attributes_read  get_attribute() 读过的属性名
+        select_options   select_option() 收到的 kwargs 字典
+    """
+
+    def __init__(self, text='', value='', displayed=True, attributes=None,
+                 click_error=None, fill_error=None, clear_error=None,
+                 input_value_error=None, text_error=None, evaluate_error=None):
         self.text = text
+        self.value = value
         self._displayed = displayed
+        self.attributes = dict(attributes or {})
         self.click_error = click_error
-        self.send_keys_error = send_keys_error
+        self.fill_error = fill_error
         self.clear_error = clear_error
-        self.calls = []          # 形如 ['clear', 'send_keys', 'click']
-        self.sent = []           # send_keys 收到的内容
+        self.input_value_error = input_value_error
+        self.text_error = text_error
+        self.evaluate_error = evaluate_error
+        self.calls = []
+        self.filled = []
+        self.pressed = []
+        self.input_files = []
+        self.evaluates = []
+        self.attributes_read = []
+        self.select_options = []
+
+    # ---- 读 ----
+    def inner_text(self):
+        if self.text_error:
+            raise self.text_error
+        return self.text
+
+    def input_value(self):
+        if self.input_value_error:
+            raise self.input_value_error
+        return self.value
+
+    def get_attribute(self, name):
+        self.attributes_read.append(name)
+        return self.attributes.get(name)
+
+    def is_visible(self):
+        return self._displayed
+
+    def count(self):
+        return 1
+
+    # ---- 动作 ----
+    def click(self, **kwargs):
+        self.calls.append('click')
+        if self.click_error:
+            raise self.click_error
+
+    def fill(self, value, **kwargs):
+        self.calls.append('fill')
+        self.filled.append(value)
+        if self.fill_error:
+            raise self.fill_error
 
     def clear(self):
         self.calls.append('clear')
         if self.clear_error:
             raise self.clear_error
 
-    def send_keys(self, *values):
-        self.calls.append('send_keys')
-        self.sent.extend(values)
-        if self.send_keys_error:
-            raise self.send_keys_error
+    def press(self, key):
+        self.calls.append('press')
+        self.pressed.append(key)
 
-    def click(self):
-        self.calls.append('click')
-        if self.click_error:
-            raise self.click_error
+    def set_input_files(self, path):
+        self.calls.append('set_input_files')
+        self.input_files.append(path)
 
-    def is_displayed(self):
-        return self._displayed
+    def evaluate(self, script, arg=None):
+        self.calls.append('evaluate')
+        self.evaluates.append(script)
+        if self.evaluate_error:
+            raise self.evaluate_error
 
+    def scroll_into_view_if_needed(self, **kwargs):
+        self.calls.append('scroll_into_view_if_needed')
 
-class FakeSwitchTo:
-    """假的 driver.switch_to，记录 frame / 窗口 / alert 的切换动作。"""
+    def hover(self, **kwargs):
+        self.calls.append('hover')
 
-    def __init__(self, driver):
-        self._driver = driver
+    def wait_for(self, state=None, timeout=None):
+        # 单元素桩总能等到；"找不到"由 Page.find_error 在 locator 层模拟
+        if getattr(self, '_page_find_error', None):
+            raise self._page_find_error
+        self.calls.append('wait_for')
 
-    def frame(self, element):
-        self._driver.switched_frames.append(element)
+    def select_option(self, label=None, value=None, index=None):
+        self.calls.append('select_option')
+        self.select_options.append({'label': label, 'value': value, 'index': index})
 
-    def default_content(self):
-        self._driver.default_content_count += 1
+    def all(self):
+        return [self]
 
-    def window(self, handle):
-        self._driver.switched_windows.append(handle)
-        self._driver.current_window_handle = handle
+    def first(self):
+        return self
 
+    # Playwright 的 Locator.first 是属性；这里用 property 兼容两种写法
     @property
-    def alert(self):
-        return self._driver.alert
+    def _first(self):
+        return self
 
 
-class FakeAlert:
-    """假的浏览器原生弹窗。"""
+class FakeLocator:
+    """假的 Playwright Locator：.first 返回自身，动作转发给绑定的目标元素。
+
+    :param page: 归属的 FakePage（借它的 find_error 模拟"元素不存在"）
+    :param target: 动作转发目标（FakeElement 或另一个 FakeLocator 包装的元素）
+    :param selector: 编译后的 Playwright 选择器字符串（断言用）
+    :param many: 由 locator.all() 返回的"列表定位器"，可被 .all() 再次取出
+    """
+
+    def __init__(self, page, target, selector, many=False):
+        self._page = page
+        self._target = target
+        self.selector = selector
+        self.many = many
+
+    # ---- 身份与惰性 ----
+    @property
+    def first(self):
+        return self
+
+    def all(self):
+        if self.many:
+            return [self]
+        return list(self._page.locator_all(self.selector))
+
+    def locator(self, sub_selector):
+        """在已定位元素内再定位（对应 get_table_rows 的 tbl.locator('.//tr')）。"""
+        rows = self._page.locator_all(sub_selector)
+        if rows:
+            return rows[0]
+        return FakeLocator(self._page, FakeElement(), sub_selector, many=True)
+
+    # ---- 探测 ----
+    def count(self):
+        if self._page.find_error is not None:
+            return 0
+        if self.many:
+            return len(self._page.elements) or 1
+        return 1
+
+    def is_visible(self):
+        if self._page.find_error is not None:
+            return False
+        return self._target.is_visible()
+
+    def wait_for(self, state=None, timeout=None):
+        if self._page.find_error is not None:
+            raise self._page.find_error
+        self._page.wait_fors.append((state, timeout))
+
+    # ---- 动作转发（同时记到 target 与 page 序列）----
+    def _dispatch(self, name, *args, **kwargs):
+        method = getattr(self._target, name)
+        return method(*args, **kwargs)
+
+    def click(self, **kwargs):
+        return self._dispatch('click', **kwargs)
+
+    def fill(self, value, **kwargs):
+        return self._dispatch('fill', value, **kwargs)
+
+    def clear(self):
+        return self._dispatch('clear')
+
+    def press(self, key):
+        return self._dispatch('press', key)
+
+    def set_input_files(self, path):
+        return self._dispatch('set_input_files', path)
+
+    def evaluate(self, script, arg=None):
+        return self._dispatch('evaluate', script, arg)
+
+    def scroll_into_view_if_needed(self, **kwargs):
+        return self._dispatch('scroll_into_view_if_needed')
+
+    def hover(self, **kwargs):
+        return self._dispatch('hover')
+
+    def inner_text(self):
+        return self._dispatch('inner_text')
+
+    def input_value(self):
+        return self._dispatch('input_value')
+
+    def get_attribute(self, name):
+        return self._dispatch('get_attribute', name)
+
+    def select_option(self, label=None, value=None, index=None):
+        return self._dispatch('select_option', label=label, value=value, index=index)
+
+
+class FakeDialog:
+    """假的浏览器原生弹窗（Playwright Dialog）。"""
 
     def __init__(self):
         self.accepted = False
@@ -402,127 +585,217 @@ class FakeAlert:
         self.accepted = True
 
 
-class FakeDriver:
-    """假的 webdriver，覆盖 BasePage 实际会用到的全部 API。"""
+class FakeContext:
+    """假的 BrowserContext：管着 pages 列表与关闭标记。"""
 
-    def __init__(self, title='', window_handles=None, element=None,
-                 elements=None, find_error=None):
-        self.title = title
-        self._handles = list(window_handles or ['window-1'])
-        self.current_window_handle = self._handles[0]
-        self._element = element if element is not None else FakeElement()
-        self._elements = elements if elements is not None else []
+    def __init__(self, browser=None, viewport=None, locale=None):
+        self.browser = browser
+        self.viewport = viewport
+        self.locale = locale
+        self.pages = []
+        self.default_timeouts = []      # set_default_timeout 收到的毫秒值
+        self.closed = False
+
+    def new_page(self):
+        page = FakePage(context=self)
+        self.pages.append(page)
+        return page
+
+    def set_default_timeout(self, milliseconds):
+        self.default_timeouts.append(milliseconds)
+
+    def close(self):
+        self.closed = True
+
+
+class FakeBrowser:
+    """假的 Browser：记录 new_context 参数，负责建 Page。"""
+
+    def __init__(self, launch_kwargs=None):
+        self.launch_kwargs = dict(launch_kwargs or {})
+        self.contexts = []
+        self.closed = False
+
+    def new_context(self, **kwargs):
+        context = FakeContext(browser=self, **{
+            k: kwargs[k] for k in ('viewport', 'locale') if k in kwargs})
+        context.context_kwargs = kwargs
+        self.contexts.append(context)
+        return context
+
+    def close(self):
+        self.closed = True
+
+
+class FakeBrowserType:
+    """假的 playwright.chromium / playwright.firefox。
+
+    launch() 记录全部关键字参数（headless/args/executable_path/channel），
+    可注入 launch_error 模拟"浏览器起不来"。
+    """
+
+    def __init__(self, name='chromium', launch_error=None):
+        self.name = name
+        self.launch_error = launch_error
+        self.launches = []               # [(kwargs, ...)] 每次 launch 的关键字参数
+        self.browsers = []               # launch 成功产出的 FakeBrowser
+
+    def launch(self, **kwargs):
+        self.launches.append(kwargs)
+        if self.launch_error:
+            raise self.launch_error
+        browser = FakeBrowser(kwargs)
+        self.browsers.append(browser)
+        return browser
+
+
+class FakePage:
+    """假的 Playwright Page —— 取代旧基座的 FakeDriver。
+
+    :param title:     title() 的返回值（注意 Playwright 里是方法不是属性）
+    :param element:   locator() 产出动作转发目标；None 自动给一个默认 FakeElement
+    :param elements:  locator(...).all() 返回列表的元素列表（表格行等）
+    :param find_error: 非 None 时模拟"元素不存在"：wait_for 抛它、count() 返回 0
+    """
+
+    def __init__(self, title='', element=None, elements=None, find_error=None,
+                 context=None):
+        self._title = title
+        self.element = element if element is not None else FakeElement()
+        self.elements = elements if elements is not None else []
         self.find_error = find_error
+        self.context = context if context is not None else FakeContext()
+        # 若构造了独立 context，把本页面登记进去（模拟首标签页）
+        if self not in self.context.pages:
+            self.context.pages.append(self)
 
-        self.calls = []                # [('find_element', by, value), ...]
-        self.scripts = []              # execute_script 的脚本内容
-        self.screenshots = []          # 截图落盘路径
-        self.visited = []              # get() 访问过的 url
-        self.window_sizes = []         # set_window_size 的参数
-        self.implicit_waits = []
-        self.maximized = 0
-        self.quit_called = False
-        self.refreshed = 0
-        self.switched_frames = []
-        self.switched_windows = []
-        self.default_content_count = 0
-        self.alert = FakeAlert()
-        self.switch_to = FakeSwitchTo(self)
+        self.calls = []              # [('locator', pw_selector), ...]
+        self.wait_fors = []          # [(state, timeout_ms), ...]
+        self.scripts = []            # 页面级 evaluate 的脚本
+        self.screenshots = []        # screenshot(path=) 的落盘路径
+        self.visited = []            # goto() 访问过的 url
+        self.reloaded = 0            # reload() 次数
+        self.frontmost = 0           # bring_to_front() 次数
+        self.closed = False
+        self.events_waited = []      # wait_for_event 的事件名
+        self.dialog = FakeDialog()
+        self.frame_locators = []     # frame_locator() 的选择器
 
-    # ---- 元素查找 ----
-    def find_element(self, by, value):
-        self.calls.append(('find_element', by, value))
-        if self.find_error:
-            raise self.find_error
-        return self._element
+    # ---- 元素定位 ----
+    def locator(self, selector):
+        self.calls.append(('locator', selector))
+        return FakeLocator(self, self.element, selector)
 
-    def find_elements(self, by, value):
-        self.calls.append(('find_elements', by, value))
-        if self.find_error:
-            raise self.find_error
-        return self._elements
+    def locator_all(self, selector):
+        """内部辅助：把 self.elements 包成"多匹配"定位器列表。"""
+        if not self.elements:
+            return [FakeLocator(self, self.element, selector, many=True)]
+        return [FakeLocator(self, el, selector) for el in self.elements]
 
-    # ---- 浏览器控制 ----
-    def get(self, url):
+    def frame_locator(self, selector):
+        self.frame_locators.append(selector)
+        return FakeFrameLocator(self, selector)
+
+    # ---- 页面 ----
+    def title(self):
+        return self._title
+
+    def goto(self, url, **kwargs):
         self.visited.append(url)
 
-    def maximize_window(self):
-        self.maximized += 1
+    def reload(self, **kwargs):
+        self.reloaded += 1
 
-    def set_window_size(self, width, height):
-        self.window_sizes.append((width, height))
-
-    def implicitly_wait(self, seconds):
-        self.implicit_waits.append(seconds)
-
-    def quit(self):
-        self.quit_called = True
-
-    def refresh(self):
-        self.refreshed += 1
-
-    def execute_script(self, script, *args):
+    def evaluate(self, script):
         self.scripts.append(script)
 
-    def get_screenshot_as_file(self, path):
+    def screenshot(self, path=None, **kwargs):
         self.screenshots.append(path)
-        with open(path, 'wb') as fp:
-            fp.write(b'fake-png')
-        return True
+        if path:
+            with open(path, 'wb') as fp:
+                fp.write(b'fake-png')
+        return b'fake-png'
+
+    def wait_for_event(self, event, timeout=None):
+        self.events_waited.append(event)
+        return self.dialog
+
+    def bring_to_front(self):
+        self.frontmost += 1
+
+    def wait_for_timeout(self, ms):
+        """泵式等待（真实 Playwright 里这是唯一能推进事件循环的等待方式）。
+
+        桩实现不真睡，只计数，供"轮询等新标签页"这类逻辑在无浏览器下快速走完。
+        """
+        self.pumps = getattr(self, 'pumps', 0) + 1
+
+    def close(self):
+        self.closed = True
+
+    # ---- 测试辅助 ----
+    def add_other_page(self, title='', **kwargs):
+        """模拟新开了一个标签页：同 context 下追加一个 Page 并返回它。"""
+        other = FakePage(title=title, context=self.context, **kwargs)
+        return other
 
     @property
-    def window_handles(self):
-        return list(self._handles)
+    def located_values(self):
+        """按顺序取 locator() 收到过的选择器（旧基座 located_values 的等价物）。"""
+        return [args[1] for args in self.calls if args[0] == 'locator']
 
-    def add_window(self, handle):
-        """测试辅助：模拟新开了一个标签页。"""
-        self._handles.append(handle)
+
+class FakeFrameLocator:
+    """假的 FrameLocator：locator() 仍回到宿主 Page 的元素面（只记录选择器）。"""
+
+    def __init__(self, page, selector):
+        self._page = page
+        self.selector = selector
+        self.locator_calls = []
+
+    def locator(self, selector):
+        self.locator_calls.append(selector)
+        return FakeLocator(self._page, self._page.element, selector)
 
 
 # ==========================================================================
-# 五、假 webdriver 模块（供 open_browser 测试替换）
+# 五、假 Playwright 入口（供 open_browser 测试替换）
+#   用法：factory = FakePlaywrightFactory()
+#         with mock.patch.object(base_page, '_ensure_playwright', lambda: factory):
+#             driver = BasePage().open_browser()
+#   断言点：factory.chromium.launches[0]['headless'] 等；
+#           产出的 driver 就是 FakePage，可用其记录字段做后续断言。
 # ==========================================================================
-class FakeChromeOptions:
-    """假的 ChromeOptions，把 add_argument / add_experimental_option 记录下来。"""
+class FakePlaywrightFactory:
+    """假的 Playwright 实例：暴露 chromium / firefox 两个 FakeBrowserType。"""
 
-    def __init__(self):
-        self.arguments = []
-        self.experimental = {}
-        self.binary_location = None
+    def __init__(self, page=None, chrome_error=None, firefox_error=None):
+        self.chromium = FakeBrowserType('chromium', launch_error=chrome_error)
+        self.firefox = FakeBrowserType('firefox', launch_error=firefox_error)
+        self.default_page = page          # launch 后 new_page 返回的"预置页面"
+        self.stopped = False
 
-    def add_argument(self, arg):
-        self.arguments.append(arg)
+    def stop(self):
+        self.stopped = True
 
-    def add_experimental_option(self, name, value):
-        self.experimental[name] = value
+    @property
+    def last_browser(self):
+        for bt in (self.chromium, self.firefox):
+            if bt.browsers:
+                return bt.browsers[-1]
+        return None
 
-
-class FakeWebDriverFactory:
-    """假的 webdriver 命名空间：Chrome/Firefox/Edge 都返回指定的 driver。"""
-
-    def __init__(self, driver=None, chrome_error=None):
-        self.driver = driver if driver is not None else FakeDriver()
-        self.chrome_error = chrome_error
-        self.chrome_options = None
-        self.chrome_calls = 0
-        self.firefox_calls = 0
-        self.edge_calls = 0
-        self.ChromeOptions = FakeChromeOptions
-
-    def Chrome(self, options=None):            # noqa: N802 - 对齐 selenium 的命名
-        self.chrome_calls += 1
-        self.chrome_options = options
-        if self.chrome_error:
-            raise self.chrome_error
-        return self.driver
-
-    def Firefox(self, *args, **kwargs):        # noqa: N802
-        self.firefox_calls += 1
-        return self.driver
-
-    def Edge(self, *args, **kwargs):           # noqa: N802
-        self.edge_calls += 1
-        return self.driver
+    @property
+    def last_page(self):
+        """取最近一次 open_browser 产出的 Page（含预置 default_page）。"""
+        browser = self.last_browser
+        if browser is None:
+            return None
+        for context in reversed(browser.contexts):
+            if context.pages:
+                return context.pages[-1]
+            return context.new_page()
+        return None
 
 
 # ==========================================================================
@@ -545,9 +818,11 @@ def load_module(name, path):
 # 常用异常，方便测试文件直接引用
 __all__ = [
     'BASE_DIR', 'DEFAULT_INI', 'patch_config', 'patch_dirs', 'make_sandbox',
-    'drop_modules', 'FakeElement', 'FakeDriver', 'FakeAlert', 'FakeSwitchTo',
-    'FakeChromeOptions', 'FakeWebDriverFactory', 'load_module',
+    'drop_modules', 'load_module',
     'CASE_SOURCE_PASS', 'CASE_SOURCE_MIXED', 'CASE_SOURCE_SETUPCLASS_BOOM',
-    'CASE_SOURCE_SKIP', 'By', 'NoSuchElementException', 'TimeoutException',
-    'WebDriverException', 'unittest',
+    'CASE_SOURCE_SKIP', 'unittest',
+    'FakeElement', 'FakeLocator', 'FakePage', 'FakeFrameLocator',
+    'FakeContext', 'FakeBrowser', 'FakeBrowserType', 'FakeDialog',
+    'FakePlaywrightFactory',
+    'PlaywrightError', 'PlaywrightTimeoutError',
 ]

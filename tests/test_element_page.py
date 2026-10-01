@@ -72,7 +72,7 @@ class TestElementCoverage(unittest.TestCase):
             self.assertTrue(hasattr(Element1, name), '缺少关键元素：%s' % name)
 
     def test_文件上传控件使用input_file(self):
-        """上传走 send_keys 方案的前提：定位到 input[type=file]。"""
+        """直接赋值上传方案的前提：定位到 input[type=file] 隐藏控件。"""
         self.assertIn('file', Element1.FileInput[1].lower())
 
 

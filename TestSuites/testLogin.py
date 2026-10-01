@@ -77,15 +77,15 @@ class TestLogin(unittest.TestCase):
     driver = None
 
     # ---------------------------------------------------------------------- #
-    # 断言期望值与查询关键字的兜底默认值。
-    # 真正生效的值在 setUpClass 里从 config.ini [assert] / [testcase] 读取，
+    # 断言期望值与用例参数：全部来自 config.ini，代码里不留任何业务字面量。
+    # [assert] 三个标题、[testcase] 查询关键字/手机号/上报单位属于业务数据，
+    # 缺配置时 Config.require 会在启动阶段就报错并指明该配哪个键（不静默兜底）。
     # 可被同名环境变量覆盖（如 UI_ASSERT_TITLE_LOGIN）。
-    # 这里的字面量仅为「配置缺失时」的安全回退，保证用例不会因缺配置而崩溃。
     # ---------------------------------------------------------------------- #
-    title_login = '统一门户'
-    title_workbench = '工作台 - 云媒资系统'
-    title_material = '素材库 - 云媒资系统'
-    query_keyword = '测试'
+    title_login = None
+    title_workbench = None
+    title_material = None
+    query_keyword = None
 
     # ---------------------------------------------------------------------- #
     # 前置 / 后置：整个类只执行一次（区别于每条用例都跑的 setUp / tearDown）
@@ -93,18 +93,22 @@ class TestLogin(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """类级前置：读参数 -> 开浏览器 -> 建页面对象。只执行一次。"""
-        # ---- 1. 从 config.ini 读取用例参数，避免硬编码 ----
+        # ---- 1. 从 config.ini 读取用例参数（业务数据缺失即报错，绝不硬编码）----
         cls.username, cls.password = Config.get_account()          # 登录账号、密码
         cls.upload_file = Config.get_upload_file()                 # 待上传视频的绝对路径
-        cls.video_author = Config.get('testcase', 'video_author', cls.username)  # 视频作者，缺省用账号名
-        cls.phone = Config.get('testcase', 'phone')                # 手机号
-        cls.reporting = Config.get('testcase', 'reporting')        # 上报单位
-        cls.query_keyword = Config.get('testcase', 'query_keyword', cls.query_keyword)  # 查询关键字
+        # 视频作者：未单独配置时默认用登录账号（合理的数据联动，非写死字面量）
+        cls.video_author = Config.get('testcase', 'video_author') or cls.username
+        cls.phone = Config.require('testcase', 'phone')            # 手机号
+        cls.reporting = Config.require('testcase', 'reporting')    # 上报单位
+        cls.query_keyword = Config.require('testcase', 'query_keyword')  # 查询关键字
 
-        # ---- 1.1 断言期望值：不同系统页面标题不同，统一从配置取 ----
-        cls.title_login = Config.get('assert', 'title_login', cls.title_login)
-        cls.title_workbench = Config.get('assert', 'title_workbench', cls.title_workbench)
-        cls.title_material = Config.get('assert', 'title_material', cls.title_material)
+        # ---- 1.1 断言期望值：换系统只改配置，代码里零业务字面量 ----
+        cls.title_login = Config.require('assert', 'title_login',
+                                         '登录成功后门户首页的标题')
+        cls.title_workbench = Config.require('assert', 'title_workbench',
+                                             '进入生产系统（工作台）后的标题')
+        cls.title_material = Config.require('assert', 'title_material',
+                                            '进入素材库后的标题')
 
         # ---- 2. 打开浏览器并访问被测地址 ----
         cls.base = BasePage()                       # 基类实例，只用来管浏览器生命周期
@@ -166,19 +170,20 @@ class TestLogin(unittest.TestCase):
         log1.info('执行测试用例：%s' % case_name)
         self.login_page.click_sign_in()
         self.login_page.switch_other_window()   # 切到新打开的标签页
-        self.login_page.my_sleep(2)             # 等新页面首屏渲染
+        # 等新页面首屏渲染（时长可配 [timing] workbench_render，慢环境可调大）
+        self.login_page.page_wait('workbench_render', 2)
         self.check_title(case_name, self.title_workbench)
 
     def test_3material(self):
         """用例3：从工作台进入素材库。
 
-        步骤：左侧菜单 内容管理 -> 素材库 -> 校验标题变成「素材库 - 云媒资系统」。
+        步骤：左侧菜单 内容管理 -> 素材库 -> 校验标题等于 [assert] title_material。
         """
         case_name = '进入素材库'
         log1.info('执行测试用例：%s' % case_name)
-        self.login_page.my_sleep(3)             # 等工作台的菜单加载完
+        self.login_page.page_wait('menu_load', 3)         # 等工作台的菜单加载完
         self.login_page.click_material()
-        self.login_page.my_sleep(2)
+        self.login_page.page_wait('material_render', 2)   # 等素材库首屏渲染
         self.check_title(case_name, self.title_material)
 
     def test_4uplaodbutton(self):
@@ -193,10 +198,10 @@ class TestLogin(unittest.TestCase):
         """
         case_name = '上传视频'
         log1.info('执行测试用例：%s' % case_name)
-        self.login_page.upload_file(self.upload_file)     # 选择文件（send_keys 或 autoit）
-        self.login_page.my_sleep(3)                       # 等上传组件识别到文件
+        self.login_page.upload_file(self.upload_file)     # 选择文件（直接赋值或 autoit 对话框）
+        self.login_page.page_wait('upload_recognize', 3)  # 等上传组件识别到文件
         self.login_page.fill_upload_form(self.video_author, self.phone, self.reporting)
-        self.login_page.my_sleep(5)                       # 等上传进度走完
+        self.login_page.page_wait('upload_progress', 5)   # 等上传进度走完
         self.check_title(case_name, self.title_material)
 
     def test_5keyword(self):
@@ -208,7 +213,7 @@ class TestLogin(unittest.TestCase):
         case_name = '关键字查询'
         log1.info('执行测试用例：%s' % case_name)
         self.login_page.keyword_query(self.query_keyword)
-        self.login_page.my_sleep(3)                       # 等查询结果返回
+        self.login_page.page_wait('query_result', 3)      # 等查询结果返回
         self.check_title(case_name, self.title_material)
 
     def test_6submitted(self):
@@ -217,13 +222,14 @@ class TestLogin(unittest.TestCase):
         步骤：刷新页面拿到最新素材列表 -> 点第一行的「报 送」-> 选初审人 -> 保存。
         校验：报送是弹窗流程，标题不变。
 
-        注意：这里直接用了 self.driver.refresh()，
-        属于绕过页面对象的分层写法，属于历史遗留，后续可补一个 refresh() 到 BasePage。
+        注意：刷新走页面对象继承的 BasePage.refresh()（Playwright 的 page.reload()），
+        不再直接摸 driver —— 迁移前这里是 self.driver.refresh()，属于绕过分层的历史遗留，
+        且 Playwright 切换标签页后旧 driver 引用不会自动指向新页面，直接刷新会刷错标签页。
         """
         case_name = '报送'
         log1.info('执行测试用例：%s' % case_name)
-        self.driver.refresh()                             # 刷新，确保能看到刚上传的素材
-        self.login_page.my_sleep(5)
+        self.login_page.refresh()                         # 刷新，确保能看到刚上传的素材
+        self.login_page.page_wait('refresh_render', 5)    # 等刷新后列表重新渲染
         self.login_page.submitted()
-        self.login_page.my_sleep(2)
+        self.login_page.page_wait('submit_render', 2)     # 等报送保存的后端响应落库
         self.check_title(case_name, self.title_material)

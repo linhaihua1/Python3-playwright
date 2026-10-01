@@ -40,7 +40,7 @@
                         ┌───────────────────────────┐
                         │ UI 自动化任务             │
                         │  ① 拉代码 + 建虚拟环境     │
-                        │  ② 跑冒烟用例（无头 Chrome）│
+                        │  ② 跑冒烟用例（无头 Chromium）│
                         │  ③ 出 HTML 报告 + JUnit XML│
                         │  ④ 归档 + 反馈构建状态     │
                         └───────────────────────────┘
@@ -67,7 +67,7 @@
 
 | # | 问题（接入前） | 改造方案 | 涉及文件 |
 |---|---|---|---|
-| 1 | Jenkins 节点无桌面，Chrome 起不来 | 新增无头模式：`[ci] headless` + `UI_CI_HEADLESS`，无头下自动附加 `--headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage --window-size=1920,1080`，并把 `maximize_window()` 换成固定尺寸 | `Common/basePage.py`、`config.ini` |
+| 1 | Jenkins 节点无桌面，浏览器起不来 | 新增无头模式：`[ci] headless` + `UI_CI_HEADLESS`，无头下自动附加 `--no-sandbox --disable-gpu --disable-dev-shm-usage --hide-scrollbars` 启动参数，窗口尺寸由浏览器上下文的 `viewport` 固定 1920×1080 | `Common/basePage.py`、`config.ini` |
 | 2 | 脚本永远返回 0，Jenkins 无法判定失败 | `runner.run()` 返回 `exit_code`（0 通过 / 1 用例失败 / 2 环境异常），`run.py` 末尾 `sys.exit()` | `Common/runner.py`、`run.py`、`entrance.py` |
 | 3 | 只有 HTML 报告，Jenkins 无法展示用例明细与趋势 | 新增 JUnit XML 输出，**测试只跑一遍**即同时产出 HTML + XML（通过 `resultclass` 注入结果收集类） | `Common/junitReport.py`、`Common/HTMLTestReportCN.py` |
 | 4 | 账号密码明文在 `config.ini`，无法入库 | `Config.get()` 支持 `UI_<段>_<键>` 环境变量覆盖，Jenkins 用凭据注入；新增 `.gitignore` 与 `config.ini.example` | `Common/config.py`、`.gitignore`、`config.ini.example` |
@@ -75,9 +75,9 @@
 | 6 | 环境地址写死在配置里，无法按分支/环境切换 | 支持 `UI_ENVIRONMENT_URL` 环境变量与 `--url` 参数覆盖 | `Common/config.py`、`run.py` |
 | 7 | 报告里看不出是哪次构建、哪个分支 | 新增 `Common/ci.py` 收集构建上下文，自动拼进报告描述与 JUnit 属性 | `Common/ci.py`、`Common/runner.py` |
 | 8 | 失败时要在海量控制台日志里翻原因 | 新增失败摘要打印（失败用例一行摘要直接输出到控制台） | `Common/runner.py` |
-| 9 | 容器里跑需要指定 Chrome 路径 | 新增 `[ci] chrome_binary` / `UI_CI_CHROME_BINARY` | `Common/basePage.py` |
+| 9 | 需要用本机浏览器代替自带 Chromium | 保留 `[ci] chrome_binary` / `UI_CI_CHROME_BINARY`（迁移 Playwright 后语义是 `executable_path`，**留空即用自带 Chromium，多数场景不再需要配**） | `Common/basePage.py` |
 | 10 | 无流水线定义与容器镜像 | 新增 `Jenkinsfile`、`Dockerfile`、`.dockerignore` | 根目录 |
-| 11 | 框架代码改错了要等几分钟跑完 UI 用例才知道 | 新增 `tests/` 框架单元测试（350 项 / 26 秒，不开浏览器、无业务副作用），并在流水线里作为**第一个质量门禁** | `tests/`、`Jenkinsfile` |
+| 11 | 框架代码改错了要等几分钟跑完 UI 用例才知道 | 新增 `tests/` 框架单元测试（439 项 / 2 秒，不开浏览器、无业务副作用），并在流水线里作为**第一个质量门禁** | `tests/`、`Jenkinsfile` |
 
 ---
 
@@ -88,10 +88,10 @@
 | 项 | 要求 |
 |---|---|
 | Python | 3.9+（实测 3.11.9） |
-| 浏览器 | Chrome（Linux 节点装 `chromium` + `chromium-driver` 也可） |
-| 内存 | ≥ 2 GB（无头 Chrome 单实例约 500 MB～1 GB） |
+| 浏览器 | **无需安装**：Playwright 自管浏览器（`python -m playwright install chromium` 一次性下载）；配 `edge` 时用系统已装的 Edge，`firefox` 需另装 |
+| 内存 | ≥ 2 GB（无头 Chromium 单实例约 500 MB～1 GB） |
 | 磁盘 | 建议 ≥ 5 GB（报告 + 截图会累积，已配 `buildDiscarder` 保留 30 次） |
-| 网络 | 能访问被测系统；首次执行需要联网下载 chromedriver（Selenium Manager） |
+| 网络 | 能访问被测系统；首次需联网执行 `python -m playwright install chromium` 下载浏览器（约 150 MB，一次性） |
 | 系统 | Linux / Windows 均可，`Jenkinsfile` 已做双平台分支 |
 
 ### 3.2 需要安装的 Jenkins 插件
@@ -211,9 +211,23 @@ stage('构建后触发冒烟测试') {
 | `UI_CI_IMPLICIT_WAIT` | `[ci] implicit_wait` | 隐式等待秒数 | `10` |
 | `UI_CI_SMOKE_CASES` | `[ci] smoke_cases` | 冒烟用例关键字 | `test_1login,test_2select_scxt` |
 | `UI_CI_JUNIT_XML` | `[ci] junit_xml` | JUnit XML 输出路径 | `Report/junit-results.xml` |
-| `UI_CI_EXTRA_CHROME_ARGS` | `[ci] extra_chrome_args` | 附加 Chrome 参数 | `--disable-images` |
-| `UI_CI_CHROME_BINARY` | `[ci] chrome_binary` | Chrome 可执行文件路径 | `/usr/bin/chromium` |
+| `UI_CI_EXTRA_CHROME_ARGS` | `[ci] extra_chrome_args` | 附加浏览器启动参数（仅 chrome/edge 生效） | `--disable-images` |
+| `UI_CI_CHROME_BINARY` | `[ci] chrome_binary` | 浏览器可执行文件路径（Playwright 的 `executable_path`；**留空 = 自带 Chromium**） | `/usr/bin/chromium` |
 | `UI_ENV_OVERRIDE` | — | 整体关闭覆盖机制 | `false` |
+
+零硬编码改造后，以下**必填业务配置**同样可被环境变量注入（多系统/多环境流水线的关键）：
+
+| 环境变量 | 覆盖的配置项 | 用途 | 示例值 |
+|---|---|---|---|
+| `UI_ASSERT_TITLE_LOGIN` / `UI_ASSERT_TITLE_WORKBENCH` / `UI_ASSERT_TITLE_MATERIAL` | `[assert] title_*` | 断言用的期望页面标题（**必填**，缺失即退出码 2） | `统一门户` |
+| `UI_TESTCASE_QUERY_KEYWORD` / `UI_TESTCASE_PHONE` / `UI_TESTCASE_REPORTING` | `[testcase] query_keyword / phone / reporting` | 查询关键字与表单字段（**必填**） | `测试` |
+| `UI_REPORT_TITLE` / `UI_REPORT_FILENAME` / `UI_REPORT_TESTER` / `UI_REPORT_DESCRIPTION` | `[report] *` | 报告元信息（**必填**） | `每日冒烟报告` |
+| `UI_TIMING_*` | `[timing] *` | 用例各步骤等待秒数（技术参数，CI 慢时整体调大，如 `UI_TIMING_MENU_LOAD=5`） | `5` |
+| `UI_TUNING_*` | `[tuning] *` | 视口、轮询间隔等调优参数（如 `UI_TUNING_VIEWPORT=1366x768`） | `1366x768` |
+
+> 💡 注意**"必填缺失"与"用例失败"在流水线里要区别对待**：业务配置没配时框架直接
+> ABORTED（退出码 2，用例根本没跑），Jenkins 应把它标为需人工介入的环境问题（见第十一章），
+> 而不是当成测试失败去查业务。
 
 ### 5.1.1 一个不覆盖 config.ini 的变量：`UI_LOG_DIR`
 
@@ -348,12 +362,12 @@ APP_BUILD_NO     = "${params.APP_BUILD_NO}"
 | 阶段 | 做什么 | 关键点 |
 |---|---|---|
 | **拉取代码** | `checkout scm` 并打印分支/提交号 | 便于在控制台确认测的是哪份代码 |
-| **准备运行环境** | 建 `.venv` 独立虚拟环境 + `pip install -r requirements.txt` | 用独立 venv，避免污染节点全局 Python；`isUnix()` 分支处理 Windows/Linux 差异 |
-| **框架单元测试** | `python tests/run_unit_tests.py --junit Report/unit-tests.xml` | **质量门禁**：不开浏览器、几十秒、零业务副作用，先把"框架自身坏了"这类问题拦下来 |
+| **准备运行环境** | 建 `.venv` 独立虚拟环境 + `pip install -r requirements.txt` + `python -m playwright install chromium` | 用独立 venv，避免污染节点全局 Python；浏览器由 Playwright 自管（首构建约 150 MB，之后有缓存）；`isUnix()` 分支处理 Windows/Linux 差异 |
+| **框架单元测试** | `python tests/run_unit_tests.py --junit Report/unit-tests.xml` | **质量门禁**：不开浏览器、几秒、零业务副作用，先把"框架自身坏了"这类问题拦下来 |
 | **执行冒烟测试** | 拼装命令并以 `sh`/`bat` 执行 | **sh/bat 返回非 0 会让本 stage 自动变红**，这就是"自动判定构建失败"的实现 |
 
 > **为什么把单元测试放在 UI 测试之前**：UI 用例失败时，最常见的心智负担是
-> "到底是框架坏了，还是页面改版了？"。先跑几十秒的单元测试，就能把这两类原因分开 ——
+> "到底是框架坏了，还是页面改版了？"。先跑几秒的单元测试，就能把这两类原因分开 ——
 > 单元测试红了先修框架；单元测试绿而 UI 红了，直接去看页面与环境。
 
 实际执行的命令形如：
@@ -457,13 +471,13 @@ triggers {
 |---|---|---|
 | 成功 | 全部用例通过 | — |
 | 失败 | 有用例未通过 | 看「测试结果」→ 定位用例 → 看归档截图与日志 |
-| 超时/中止 | 环境无响应 | 检查被测系统是否可用、Chrome 是否起得来 |
+| 超时/中止 | 环境无响应 | 检查被测系统是否可用、浏览器（Chromium）是否起得来 |
 
 ---
 
 ## 十、容器化运行方案
 
-当 Jenkins 使用 Kubernetes / Docker agent，或节点上无法安装 Chrome 时，用容器方式。
+当 Jenkins 使用 Kubernetes / Docker agent，或节点上不方便装浏览器时，用容器方式（Playwright 镜像自带 Chromium，见下）。
 
 ### 10.1 构建镜像
 
@@ -475,11 +489,11 @@ docker build -t ui-auto-test:latest .
 
 | 包 | 作用 |
 |---|---|
-| `chromium` + `chromium-driver` | 浏览器与配套驱动 |
+| Playwright 自带 Chromium | `python -m playwright install --with-deps chromium` 一并装齐浏览器与全部系统运行库，**不再 apt 装 chromium / chromium-driver** |
 | `fonts-noto-cjk` / `fonts-wqy-zenhei` | **中文字体**（缺字体时页面文字渲染成方块，会导致按文本定位失效、截图失去价值） |
 | `tzdata` | 保证日志时间与本地一致 |
 
-镜像内已设 `UI_CI_HEADLESS=true` 与 `UI_CI_CHROME_BINARY=/usr/bin/chromium`。
+镜像内已设 `UI_CI_HEADLESS=true` 与 `PLAYWRIGHT_BROWSERS_PATH=/opt/playwright`（浏览器随镜像分发，运行期不再联网下载）；`[ci] chrome_binary` 留空即可，不再需要指向 `/usr/bin/chromium`。
 
 ### 10.2 本地验证
 
@@ -501,7 +515,7 @@ docker run --rm \
 agent {
     docker {
         image 'ui-auto-test:latest'
-        // /dev/shm 太小会导致 Chrome 崩溃，2g 是实践中的安全值
+        // /dev/shm 太小会导致 Chromium 崩溃，2g 是实践中的安全值
         args '--shm-size=2g'
         reuseNode true
     }
@@ -541,7 +555,7 @@ spec:
 |---|---|---|
 | `0` | 全部通过 | 用例失败数与错误数均为 0 |
 | `1` | 用例失败 | 有用例断言失败或抛异常 |
-| `2` | 环境/配置异常 | 未收集到任何用例；被测地址未配置；浏览器启动失败 |
+| `2` | 环境/配置异常 | 未收集到任何用例；被测地址未配置；浏览器启动失败；**必填业务配置缺失**（日志含 `缺少必需配置：config.ini 的 [段] 键`，runner 会把这类错误从"用例出错"改判为环境异常） |
 
 **在流水线里区分对待**（可选增强）：
 
@@ -568,10 +582,10 @@ script {
 
 | 失败阶段 | 常见原因 | 排查动作 |
 |---|---|---|
-| 准备运行环境 | 节点没装 Python；`pip install` 拉不到包（网络/代理） | 在节点上手工执行 `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` |
+| 准备运行环境 | 节点没装 Python；`pip install` 拉不到包（网络/代理）；`playwright install` 拉不到浏览器（内网需配 `PLAYWRIGHT_DOWNLOAD_HOST` 内网源，或预烘镜像） | 在节点上手工执行 `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/python -m playwright install chromium` |
 | 框架单元测试 | 框架代码被改坏；历史遗留缺陷回归 | 本地跑 `python tests/run_unit_tests.py` 复现。它不开浏览器，可在任意机器上验证；失败信息直接指出是哪个模块的哪条契约被破坏 |
-| 执行冒烟测试 → 立刻失败，退出码 2 | 未收集到用例；地址未配置 | 见下方「收集不到用例」；并确认「未配置被测地址」 |
-| 执行冒烟测试 → Chrome 启动失败 | 无头未开；节点没 Chrome；容器 `/dev/shm` 太小 | 确认 `UI_CI_HEADLESS=true`；装 Chrome；容器加 `--shm-size=2g` |
+| 执行冒烟测试 → 立刻失败，退出码 2 | 未收集到用例；地址未配置；**必填业务配置缺失**（日志有 `缺少必需配置：config.ini 的 [段] 键`） | 见下方「收集不到用例」；确认「未配置被测地址」；缺配置就按报错提示补 config.ini 或用 Credentials/环境变量注入对应 `UI_段_键` |
+| 执行冒烟测试 → 浏览器启动失败 | 无头未开；没执行 `python -m playwright install chromium`；容器 `/dev/shm` 太小 | 确认 `UI_CI_HEADLESS=true`；跑一次 `playwright install chromium`；容器加 `--shm-size=2g` |
 | 执行冒烟测试 → 元素大量定位不到 | 被测系统不可用；页面改版；切换标签页失败 | 看归档截图 `img/`；确认被测环境是否正常 |
 | 归档结果 | 磁盘满；XML 未生成 | 检查 `Report/junit-results.xml` 是否存在；清理旧构建 |
 
@@ -590,7 +604,7 @@ script {
    `.gitignore` 误排除、或从 Windows 带过来的工作区被清理掉，流水线就会重现。
    → 日志关键字：`包标识文件`、`not importable`
 
-> 依赖没装（如节点缺 selenium）不会报"收集不到"，而是表现为**只有 1 条用例且报错**，
+> 依赖没装（如节点缺 `playwright` 包）不会报"收集不到"，而是表现为**只有 1 条用例且报错**，
 > 日志关键字 `用例模块导入失败`。这种全为占位对象的情况会直接判为环境异常（退出码 `2`）。
 > 完整四类根因对照表见 [使用文档 7.1](使用文档.md#71-一条用例都没收集到深度排查)。
 
@@ -648,7 +662,7 @@ echo $?      # 应为 0
 
 上线前逐项确认：
 
-- [ ] 节点已装 Python 3.9+ 与 Chrome
+- [ ] 节点已装 Python 3.9+（无需装浏览器，Playwright 自管 Chromium；首次联网执行 `python -m playwright install chromium`，或用根目录 Dockerfile 的镜像）
 - [ ] 已安装 JUnit、HTML Publisher 插件
 - [ ] 本地 `python tests/run_unit_tests.py` 已全绿（框架层质量门禁先过）
 - [ ] Jenkins 任务使用 `Pipeline script from SCM`，脚本路径为 `Jenkinsfile`

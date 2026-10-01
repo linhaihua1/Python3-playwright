@@ -53,16 +53,19 @@ import time
 import unittest
 
 from Common import ci as ci_env
-from Common.config import Config
-from Common.dir_config import base_dir, ensure_dir, htmlreport_dir, testcases_dir
+from Common.config import Config, ConfigMissingError
+from Common.dir_config import (base_dir, ensure_dir, htmlreport_dir,
+                               junitreport_file, testcases_dir)
 from Common.HTMLTestReportCN import HTMLTestRunner
 from Common.junitReport import JUnitResult, write_junit_xml
 from Common.log import log1
 
-# 兜底默认值：config.ini 里没配 [report] 段时用。
-# 真实取值优先来自 config.ini [report]，可被命令行 --title/--filename 覆盖。
-DEFAULT_TITLE = 'UI 自动化测试报告'
-DEFAULT_FILENAME = 'UI自动化测试报告.html'
+# 报告元信息（标题/文件名/执行人/描述）没有任何代码兜底值：
+# 它们属于业务数据，一律来自 config.ini -> [report]（可被环境变量覆盖），
+# 缺项时 Config.require 直接报错并指明该配哪个键 —— 零硬编码纪律。
+
+# 用例文件收集规则的代码默认值（技术参数）。配置键 [paths] case_pattern。
+DEFAULT_PATTERN = 'test*.py'
 
 # ---------------------------------------------------------------------------
 # 退出码：CI 流水线就是靠这三个数字判断这次构建是好是坏，不要随意改动
@@ -280,7 +283,7 @@ def build_suite(tests_dir=None, pattern='test*.py', cases=None):
     for case, exc in find_broken_modules(suite):
         log1.error('用例模块导入失败：%s' % case.id())
         log1.error('  原因：%s' % (exc or '未知'))
-        log1.error('  -> 常见于：依赖没安装（如 selenium）、import 路径写错、'
+        log1.error('  -> 常见于：依赖没安装（如 playwright）、import 路径写错、'
                    '文件里有语法错误。修好后该文件里的用例才会被真正收集')
 
     if cases:
@@ -294,10 +297,13 @@ def resolve_junit_path(junit=None):
     :param junit: 显式路径；传 'none'/'off' 表示不生成
     :return: 绝对路径，或 None（不生成）
 
-    默认取 config.ini -> [ci] junit_xml（相对路径按工程根目录解析）。
+    默认取 config.ini -> [ci] junit_xml；该项**没配或留空**时，
+    自动按 [paths] report_dir + junit_filename 拼出（路径单一来源，见 dir_config）。
     """
     if junit is None:
-        junit = Config.get('ci', 'junit_xml', 'Report/junit-results.xml')
+        junit = Config.get('ci', 'junit_xml', '')
+        if not str(junit).strip():
+            junit = junitreport_file
     junit = str(junit).strip()
     if not junit or junit.lower() in ('none', 'off', 'false', '0', 'no'):
         return None
@@ -328,13 +334,13 @@ def print_failure_digest(result):
     print('')
 
 
-def run(tests_dir=None, pattern='test*.py', title=None, report_name=None,
+def run(tests_dir=None, pattern=None, title=None, report_name=None,
         tester=None, description=None, send_mail=False,
         suite_kind='full', cases=None, junit=None):
     """执行测试并生成报告（HTML + JUnit XML）。
 
-    :param tests_dir:    用例目录，默认 TestSuites/
-    :param pattern:      用例文件匹配规则，默认 test*.py
+    :param tests_dir:    用例目录，默认读 config.ini -> [paths] testcases_dir
+    :param pattern:      用例文件匹配规则，默认读 [paths] case_pattern（缺省 test*.py）
     :param title:        报告标题，默认取 config.ini [report] title
     :param report_name:  报告文件名，默认取 config.ini [report] filename
     :param tester:       报告上显示的执行人，默认取 config.ini [report] tester
@@ -347,19 +353,29 @@ def run(tests_dir=None, pattern='test*.py', title=None, report_name=None,
     :return: 汇总字典，字段见下方 _summary；
              ★ 关键字段 exit_code：CI 用它判定构建成败，取值含义见本文件头部说明
 
-    注意：参数优先级为「显式传参 > 环境变量 > config.ini > 代码里的 DEFAULT_* 常量」。
+    注意：参数优先级为「显式传参 > 环境变量 > config.ini > 技术参数默认值」。
+    报告元信息属于业务数据：没显式传参又没配置时，按环境配置错误（exit 2）
+    处理并指明缺哪个键，绝不用代码里的假默认值蒙混出报告。
     """
     run_start = time.time()
 
     # ---- 0. 记录构建上下文（Jenkins 上能看出这次是哪个构建在跑）----
     build_info = ci_env.log_context()
 
-    # ---- 1. 报告元信息：逐级回退，保证任何一项都有值 ----
-    title = title or Config.get('report', 'title', DEFAULT_TITLE)
-    report_name = report_name or Config.get('report', 'filename', DEFAULT_FILENAME)
-    # 执行人/描述优先取配置，配置也没有时用通用占位值（避免写死具体人名）
-    tester = tester or Config.get('report', 'tester', 'ui-auto')
-    description = description or Config.get('report', 'description', 'UI 自动化测试')
+    # ---- 0.5 用例收集规则：显式传参 > [paths] case_pattern > 技术默认 ----
+    pattern = pattern or Config.get('paths', 'case_pattern', DEFAULT_PATTERN)
+
+    # ---- 1. 报告元信息：显式传参 > config.ini [report]（业务数据，缺失即报错）----
+    try:
+        title = title or Config.require('report', 'title', '报告页眉与浏览器标签上的标题')
+        report_name = report_name or Config.require(
+            'report', 'filename', 'HTML 报告文件名（可不带 .html 后缀）')
+        tester = tester or Config.require(
+            'report', 'tester', '报告上显示的执行人；流水线建议用环境变量注入')
+        description = description or Config.require('report', 'description', '报告描述')
+    except ConfigMissingError as exc:
+        log1.error('无法生成报告元信息：%s' % exc)
+        return _summary(exit_code=EXIT_ENV_ERROR, duration=time.time() - run_start)
     # 用户可能只传了 '报告' 没带后缀，这里补上，避免生成出没有后缀的文件
     if not report_name.lower().endswith('.html'):
         report_name += '.html'
@@ -399,7 +415,7 @@ def run(tests_dir=None, pattern='test*.py', title=None, report_name=None,
         return _summary(exit_code=EXIT_ENV_ERROR, tests_run=0, duration=time.time() - run_start)
 
     # 收集到的"用例"如果全是模块导入失败的占位对象，说明一条真实用例都没有
-    # （典型：目标机器没装 selenium）。这属于环境问题而非用例失败，
+    # （典型：目标机器没装 playwright，pip 依赖缺失）。这属于环境问题而非用例失败，
     # 归到 exit 2，避免在 CI 上被误判成"业务用例挂了"。
     broken = find_broken_modules(suite)
     if broken and len(broken) == total:
@@ -472,6 +488,16 @@ def run(tests_dir=None, pattern='test*.py', title=None, report_name=None,
     errors = len(result.errors)
     skipped = len(result.skipped)
     exit_code = EXIT_OK if (failures == 0 and errors == 0) else EXIT_TEST_FAILED
+
+    # 业务配置缺失（ConfigMissingError）属于"环境没配好"而不是"用例失败"：
+    # 用例层 require 的报错会随 setUpClass 落进 errors，这里统一改判为退出码 2，
+    # 让 CI 把它和真实用例失败区分开（缺配置重试也没用，必须人工补配置）。
+    if exit_code == EXIT_TEST_FAILED and any(
+            'ConfigMissingError' in (tb or '')
+            for _case, tb in result.errors):
+        exit_code = EXIT_ENV_ERROR
+        log1.error('检测到必需业务配置缺失：这不是用例失败，而是 config.ini 没配好，'
+                   '请按上方报错里的 段/键/环境变量 线索补配置后重跑')
 
     # 失败摘要打印到控制台，流水线日志里一眼可见
     print_failure_digest(result)
