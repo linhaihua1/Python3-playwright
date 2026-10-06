@@ -1,185 +1,132 @@
 # -*- coding: utf-8 -*-
-"""
-单元测试：新增的框架能力
-    - dataDriver 数据驱动（CSV/JSON 加载 + 参数化展开）
-    - notifier   群机器人通知（钉钉/企业微信/通用）
-    - BasePage   稳定性重试（retry / safe_click）
-"""
+"""runContext / locatorPolicy / dependency 模块的单元测试。"""
 
-import json
 import os
-import tempfile
 import unittest
 from unittest import mock
 
-from tests.helpers import patch_config, patch_dirs, FakePage, PlaywrightError
-from Common import dataDriver, notifier
-from Common.basePage import BasePage
+from Common import runContext
+from Common.locatorPolicy import _check_xpath, scan_element_page, SEVERITY_P0, SEVERITY_P1
+from Common.dependency import depends_on, DependencyTracker
 
 
-# ==========================================================================
-# 一、数据驱动 dataDriver
-# ==========================================================================
-class TestDataDriver(unittest.TestCase):
+class TestRunContext(unittest.TestCase):
+    """运行上下文与产物隔离。"""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        runContext.reset()
 
-    def _write(self, name, content):
-        path = os.path.join(self.tmp, name)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        return path
+    def test生成唯一runId(self):
+        rid1 = runContext.init()
+        rid2 = runContext.init()   # 幂等：第二次返回同一个
+        self.assertEqual(rid1, rid2)
+        self.assertTrue(len(rid1) > 10)
 
-    def test_load_csv(self):
-        path = self._write('d.csv', 'name,pwd\n张三,123\n李四,456\n')
-        rows = dataDriver.load_data(path)
-        self.assertEqual(rows, [{'name': '张三', 'pwd': '123'}, {'name': '李四', 'pwd': '456'}])
+    def test外部指定runId(self):
+        runContext.reset()
+        rid = runContext.init(run_id='build_123')
+        self.assertEqual(rid, 'build_123')
 
-    def test_load_json(self):
-        path = self._write('d.json', json.dumps([{'name': '张三'}, {'name': '李四'}]))
-        rows = dataDriver.load_data(path)
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0]['name'], '张三')
+    def test环境变量注入runId(self):
+        runContext.reset()
+        os.environ['UI_RUN_ID'] = 'jenkins_456'
+        try:
+            rid = runContext.init()
+            self.assertEqual(rid, 'jenkins_456')
+        finally:
+            del os.environ['UI_RUN_ID']
 
-    def test_json_非数组报错(self):
-        path = self._write('d.json', json.dumps({'a': 1}))
-        with self.assertRaises(ValueError):
-            dataDriver.load_data(path)
+    def test隔离模式拼接子目录(self):
+        runContext.reset()
+        runContext.init(run_id='test_run')
+        with mock.patch.object(runContext.Config, 'get_bool', return_value=True):
+            result = runContext.subdir('/tmp/Report')
+        self.assertTrue(result.endswith(os.path.join('Report', 'test_run')))
 
-    def test_不支持格式报错(self):
-        path = self._write('d.txt', 'x')
-        with self.assertRaises(ValueError):
-            dataDriver.load_data(path)
-
-    def test_装饰器打标(self):
-        @dataDriver.data_driven([{'a': 1}, {'a': 2}])
-        def f(self, row):
-            return row
-        self.assertEqual(getattr(f, '_ddt_dataset'), [{'a': 1}, {'a': 2}])
-
-    def test_参数化展开_生成多条用例(self):
-        collected = []
-
-        class Demo(unittest.TestCase):
-            def runTest(self):
-                pass
-
-            @dataDriver.data_driven([{'a': 1}, {'a': 2}, {'a': 3}])
-            def test_x(self, row):
-                collected.append(row['a'])
-
-        suite = dataDriver.expand_ddt_cases(Demo('runTest'))
-        for case in suite:
-            case.debug()
-        self.assertEqual(sorted(collected), [1, 2, 3])
+    def test非隔离模式不拼接(self):
+        runContext.reset()
+        runContext.init(run_id='test_run')
+        with mock.patch.object(runContext.Config, 'get_bool', return_value=False):
+            result = runContext.subdir('/tmp/Report')
+        self.assertEqual(result, '/tmp/Report')
 
 
-# ==========================================================================
-# 二、通知 notifier（不真正联网，用桩替换 _post）
-# ==========================================================================
-class TestNotifier(unittest.TestCase):
+class TestLocatorPolicy(unittest.TestCase):
+    """定位策略静态检查。"""
 
-    def setUp(self):
-        self._cfg = patch_config()
-        self._cfg.__enter__()
+    def test绝对路径xpath标为P0(self):
+        issues = _check_xpath('/html/body/div[4]/div/span')
+        sevs = [s for s, _, _ in issues]
+        self.assertIn(SEVERITY_P0, sevs)
 
-    def tearDown(self):
-        self._cfg.__exit__(None, None, None)
+    def test硬编码索引标为P1(self):
+        issues = _check_xpath("//tr[1]/td[8]/div/button[3]")
+        sevs = [s for s, _, _ in issues]
+        self.assertIn(SEVERITY_P1, sevs)
 
-    def test_未配置webhook返回False(self):
-        self.assertFalse(notifier.notify({'exit_code': 0, 'tests_run': 1}, webhook=''))
+    def test深层嵌套标为P1(self):
+        long_xpath = "//*[@id='app']/" + '/'.join(['div'] * 10) + '/span'
+        issues = _check_xpath(long_xpath)
+        sevs = [s for s, _, _ in issues]
+        self.assertIn(SEVERITY_P1, sevs)
 
-    def test_钉钉消息格式(self):
-        captured = {}
+    def test健康xpath无问题(self):
+        issues = _check_xpath("//input[@type='text']")
+        self.assertEqual(len(issues), 0)
 
-        def fake_post(url, payload, timeout=10):
-            captured['url'] = url
-            captured['payload'] = payload
-            return True, '{"errcode":0}'
-
-        with mock.patch.object(notifier, '_post', side_effect=fake_post):
-            ok = notifier.notify(
-                {'exit_code': 0, 'tests_run': 3, 'failures': 0, 'errors': 0,
-                 'skipped': 0, 'duration': 1.0, 'report': 'r.html'},
-                webhook='https://oapi.dingtalk.com/robot/send?access_token=abc')
-        self.assertTrue(ok)
-        self.assertEqual(captured['payload']['msgtype'], 'text')
-        self.assertIn('通过', captured['payload']['text']['content'])
-
-    def test_企业微信消息格式(self):
-        captured = {}
-        with mock.patch.object(notifier, '_post',
-                               side_effect=lambda url, payload, timeout=10: (captured.update(payload=payload) or True, 'ok')):
-            notifier.notify({'exit_code': 1, 'tests_run': 1},
-                            webhook='https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k')
-        self.assertEqual(captured['payload']['msgtype'], 'text')
-
-    def test_网络异常不抛(self):
-        with mock.patch.object(notifier, '_post', return_value=(False, 'boom')):
-            self.assertFalse(notifier.notify({'exit_code': 0}, webhook='https://example.com/hook'))
+    def test扫描不存在的文件(self):
+        result = scan_element_page('/nonexistent/file.py')
+        self.assertEqual(result, [])
 
 
-# ==========================================================================
-# 三、BasePage 稳定性重试
-# ==========================================================================
-class TestRetry(unittest.TestCase):
+class TestDependency(unittest.TestCase):
+    """用例依赖管理。"""
 
-    def setUp(self):
-        self._cfg = patch_config()
-        self._cfg.__enter__()
-        self._sleep = mock.patch.object(BasePage, 'my_sleep', return_value=None)
-        self._sleep.start()
+    def test无依赖不跳过(self):
+        tracker = DependencyTracker()
+        tracker._results = {}
+        case = mock.MagicMock()
+        case._testMethodName = 'test_a'
+        type(case).test_a = lambda self: None  # 无 _depends_on
+        skip, _ = tracker.should_skip(case)
+        self.assertFalse(skip)
 
-    def tearDown(self):
-        self._sleep.stop()
-        self._cfg.__exit__(None, None, None)
+    def test前置失败时跳过(self):
+        tracker = DependencyTracker()
+        tracker._results = {'test_login': False}
 
-    def test_首次成功不重试(self):
-        page = BasePage(driver=FakePage(), timeout=1)
-        calls = [0]
+        @depends_on('test_login')
+        def test_upload(self):
+            pass
 
-        def fn():
-            calls[0] += 1
-            return 'ok'
+        case = mock.MagicMock()
+        case._testMethodName = 'test_upload'
+        case.test_upload = test_upload
+        skip, reason = tracker.should_skip(case)
+        self.assertTrue(skip)
+        self.assertIn('test_login', reason)
 
-        self.assertEqual(page.retry(fn), 'ok')
-        self.assertEqual(calls[0], 1)
+    def test前置通过时不跳过(self):
+        tracker = DependencyTracker()
+        tracker._results = {'test_login': True}
 
-    def test_瞬时错误重试后成功(self):
-        """瞬时错误（超时、点击被挡、元素未就绪等 Playwright 异常）由框架层
-        统一重试兜底 —— Playwright 的 Locator 永不过期，无旧句柄失效类问题。"""
-        page = BasePage(driver=FakePage(), timeout=1)
-        page.DEFAULT_RETRY = 2
-        calls = [0]
+        @depends_on('test_login')
+        def test_upload(self):
+            pass
 
-        def fn():
-            calls[0] += 1
-            if calls[0] < 3:
-                raise PlaywrightError('transient')
-            return 'ok'
+        case = mock.MagicMock()
+        case._testMethodName = 'test_upload'
+        case.test_upload = test_upload
+        skip, _ = tracker.should_skip(case)
+        self.assertFalse(skip)
 
-        self.assertEqual(page.retry(fn), 'ok')
-        self.assertEqual(calls[0], 3)
-
-    def test_全部失败后抛出最后异常(self):
-        page = BasePage(driver=FakePage(), timeout=1)
-        page.DEFAULT_RETRY = 1
-        with self.assertRaises(PlaywrightError):
-            page.retry(lambda: (_ for _ in ()).throw(PlaywrightError('fail')))
-
-    def test_断言错误不重试(self):
-        page = BasePage(driver=FakePage(), timeout=1)
-        page.DEFAULT_RETRY = 3
-        calls = [0]
-
-        def fn():
-            calls[0] += 1
-            raise AssertionError('业务断言失败，不该重试')
-
-        with self.assertRaises(AssertionError):
-            page.retry(fn)
-        self.assertEqual(calls[0], 1)   # 只执行一次，不浪费重试
+    def test记录结果(self):
+        tracker = DependencyTracker()
+        case = mock.MagicMock()
+        case._testMethodName = 'test_x'
+        case.id.return_value = 'Test.test_x'
+        tracker.record(case, passed=True)
+        self.assertTrue(tracker._results['test_x'])
 
 
 if __name__ == '__main__':

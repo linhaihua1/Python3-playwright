@@ -105,6 +105,18 @@ def parse_args(argv=None):
                         help='浏览器类型，覆盖 config.ini [environment] browser')
     parser.add_argument('--url', help='被测地址，覆盖 config.ini [environment] url')
 
+    # ---- 环境安全 ----
+    # 指定目标环境类型：prod 会自动开启只读模式，拦截所有写操作（上传/提交/删除）
+    parser.add_argument('--env', choices=('prod', 'production', 'test', 'testing',
+                                          'staging', 'dev', 'online', 'release'),
+                        help='目标环境类型：prod/online/release 自动开启只读模式'
+                             '（拦截写操作），test/staging/dev 正常放行')
+
+    # ---- 并行执行 ----
+    parser.add_argument('--workers', type=int, default=None,
+                        help='并行执行的进程数（默认 1，串行）；'
+                             '大于 1 时按用例文件拆分到多进程并行跑')
+
     # ---- 多系统切换 ----
     # 一套框架管理多个被测系统：在 config.ini 里为每个系统建一个 [system_名称] 段，
     # 填 url / username / password / pattern 等，用 --system 名称 一键切换。
@@ -225,6 +237,17 @@ if __name__ == '__main__':
     args = parse_args()
     log1.info('===== UI 自动化测试开始 =====')
 
+    # 0) 初始化运行上下文：生成唯一 runId，隔离产物目录（防并发覆盖）
+    from Common import runContext
+    runContext.init()
+
+    # 0.5) 环境安全防护：--env prod 或 URL 命中生产特征时自动开启只读模式
+    from Common import envGuard
+    env_info = envGuard.activate(env_arg=args.env, url=args.url)
+    if env_info['readonly'] and args.suite == 'full':
+        log1.warning('当前为只读模式，--suite full 中的写操作用例（上传/报送）将被拦截，'
+                     '建议改用 --suite smoke 或确认目标为测试环境后再跑全量')
+
     # 1) 先按 --system 切换被测系统（会把 [system_名称] 翻译成环境变量覆盖，
     #    并可能给出该系统专属的用例 pattern）
     system_pattern = apply_system(args.system)
@@ -235,20 +258,36 @@ if __name__ == '__main__':
     # 2) 命令行参数 -> 环境变量 -> config 覆盖（在 system 之后，保证命令行优先级最高）
     apply_runtime_overrides(args)
 
-    # 3) 执行测试。runner.run() 返回汇总字典，例如：
-    # {'report': '...报告.html', 'junit': '...junit-results.xml',
-    #  'tests_run': 6, 'failures': 0, 'errors': 0, 'exit_code': 0, ...}
-    summary = runner.run(
-        pattern=pattern,
-        title=args.title,
-        report_name=args.filename,
-        tester=args.tester,
-        description=args.description,
-        suite_kind=args.suite,
-        cases=args.cases,
-        junit=args.junit,
-        send_mail=args.mail,
-    )
+    # 3) 执行测试
+    workers = args.workers or 1
+    if workers > 1:
+        # 并行模式：按用例文件拆分到多进程
+        from Common.parallelRunner import run_parallel
+        summary = run_parallel(
+            workers=workers,
+            pattern=pattern,
+            title=args.title,
+            report_name=args.filename,
+            tester=args.tester,
+            description=args.description,
+            suite_kind=args.suite,
+            cases=args.cases,
+            junit=args.junit,
+            send_mail=args.mail,
+        )
+    else:
+        # 串行模式（默认）
+        summary = runner.run(
+            pattern=pattern,
+            title=args.title,
+            report_name=args.filename,
+            tester=args.tester,
+            description=args.description,
+            suite_kind=args.suite,
+            cases=args.cases,
+            junit=args.junit,
+            send_mail=args.mail,
+        )
 
     print_conclusion(summary)
 

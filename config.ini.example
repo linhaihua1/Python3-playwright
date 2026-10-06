@@ -197,6 +197,50 @@ extra_chrome_args =
 # 对应环境变量：UI_CI_CHROME_BINARY
 chrome_binary =
 
+# 用例级 flaky 重试次数（整条用例失败时自动重跑），默认 0 = 关闭。
+# 与操作级 retry（safe_click/safe_type）互补：那个重试单个动作，这个重试整条用例。
+# 对应环境变量：UI_CI_FLAKY_RETRY
+flaky_retry = 0
+# 每次用例重试之间的等待秒数（给页面恢复时间）
+# 对应环境变量：UI_CI_FLAKY_RETRY_INTERVAL
+flaky_retry_interval = 2
+
+# 产物目录隔离：true 时每次执行生成唯一 runId 子目录（Report/<runId>/ 等），
+# 防止并发执行互相覆盖报告/日志/截图。CI 上建议保持 true。
+# 对应环境变量：UI_CI_ISOLATED_OUTPUT
+isolated_output = true
+
+# 远程浏览器地址（Selenium Grid / 云浏览器平台）。
+# 留空 = 本机启动浏览器；填了则通过 CDP 连接远程浏览器，例如：
+#   http://grid.example.com:4444          Selenium Grid
+#   wss://cloud.example.com/ws/endpoint    云浏览器平台
+# 对应环境变量：UI_CI_REMOTE_URL
+remote_url =
+
+# 并行执行：none=全部串行；files=按用例文件并行（需配合 run.py --workers N）
+# 对应环境变量：UI_CI_PARALLEL
+parallel = none
+# 默认并行进程数（--workers 未指定时使用）
+# 对应环境变量：UI_CI_THREAD_COUNT
+thread_count = 4
+
+
+# --------------------------------------------------------------------------
+# 【safety】生产环境安全防护
+#   防止误在生产环境执行写操作（上传/提交/删除）。命中以下任一条件即视为生产环境，
+#   自动开启只读模式，拦截所有写操作并报错（不静默放过）：
+#     1. 命令行 --env prod/production/online/release
+#     2. [environment] url 命中 prod_url_patterns 里的正则
+#     3. 环境变量 UI_ENV_KIND=prod
+# --------------------------------------------------------------------------
+[safety]
+# 总开关：false 时关闭全部防护（不推荐）
+enabled = true
+# 命中这些正则的 URL 视为生产环境（逗号分隔，大小写不敏感）
+prod_url_patterns = .*prod.*,.*online.*,.*release.*,.*生产.*
+# 生产环境是否允许写操作：默认 false（拦截），改成 true 等于关闭防护
+allow_write_on_prod = false
+
 
 # --------------------------------------------------------------------------
 # 【paths】目录与产出物命名（技术参数：可配，代码里有相同默认值）

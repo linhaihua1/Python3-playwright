@@ -42,6 +42,16 @@ import os
 
 from Common.config import Config
 
+
+def _with_run_id(path):
+    """如果开启了产物隔离，在 path 下拼 runId 子目录；否则原样返回。"""
+    try:
+        from Common import runContext
+        return runContext.subdir(path)
+    except Exception:      # noqa: BLE001 - runContext 未初始化时不影响路径
+        return path
+
+
 # ---------------------------------------------------------------------------
 # 工程顶层目录：本文件位于 Common/ 下，所以先取 Common/ 再往上取一层
 #   os.path.abspath(__file__)            -> .../工程根/Common/dir_config.py
@@ -55,10 +65,12 @@ base_dir = os.path.split(os.path.split(os.path.abspath(__file__))[0])[0]
 testcases_dir = os.path.join(base_dir, Config.get('paths', 'testcases_dir', 'TestSuites'))
 
 # 测试报告目录：runner 生成报告、sentMail 找最新报告都用它。
-htmlreport_dir = os.path.join(base_dir, Config.get('paths', 'report_dir', 'Report'))
+# 开启产物隔离时为 Report/<runId>/，并发执行互不覆盖
+htmlreport_dir = _with_run_id(os.path.join(base_dir, Config.get('paths', 'report_dir', 'Report')))
 
 # 失败截图根目录：basePage.get_img 拼 <img_dir>/日期/xxx.png。
-img_dir = os.path.join(base_dir, Config.get('paths', 'img_dir', 'img'))
+# 开启产物隔离时为 img/<runId>/
+img_dir = _with_run_id(os.path.join(base_dir, Config.get('paths', 'img_dir', 'img')))
 
 # JUnit XML 结果文件：CI 流水线（Jenkins 的 junit 插件）读取它判定构建是否通过。
 # 本机运行时也会生成，方便随时用工具解析结果，见 Common/junitReport.py。

@@ -337,9 +337,29 @@ class BasePage:
         extra_args = self._extra_chrome_args()
         element_timeout = config.get_int('ci', 'element_timeout', DEFAULT_TIMEOUT)
         implicit_wait = config.get_int('ci', 'implicit_wait', 5)
+        remote_url = config.get('ci', 'remote_url', '').strip()
 
         try:
             playwright = _ensure_playwright()
+
+            # ---- 0. 远程浏览器模式（Selenium Grid / 云浏览器平台）----
+            # 配了 [ci] remote_url 时，通过 CDP 连接远程浏览器而不是本机启动
+            if remote_url:
+                log1.info('连接远程浏览器：%s（无头=%s）' % (remote_url, headless))
+                if browser == 'firefox':
+                    browser_obj = playwright.firefox.connect(remote_url)
+                else:
+                    browser_obj = playwright.chromium.connect(remote_url)
+                context = browser_obj.new_context(
+                    viewport=_parse_viewport(config.get('tuning', 'viewport', '')) if headless else None,
+                    locale=config.get('tuning', 'browser_locale', DEFAULT_LOCALE),
+                )
+                context.set_default_timeout(element_timeout * 1000)
+                page = context.new_page()
+                page.goto(url)
+                self.driver = page
+                self._frame = None
+                return self.driver
 
             # ---- 1. 启动浏览器（每种浏览器一次启动，driver 即"当前标签页"）----
             if browser == 'chrome':
@@ -904,7 +924,11 @@ class BasePage:
         :param selector:  file 控件的元素描述，通常是 Element1.FileInput
         :param file_path: 文件绝对路径；不传则读 config.ini -> [testcase] upload_file
         :raise FileNotFoundError: 文件不存在时抛出，避免用例"假成功"
+        :raise ProductionWriteBlocked: 生产环境只读模式下拦截上传操作
         """
+        # 生产环境安全防护：只读模式下禁止上传文件（写操作）
+        from Common.envGuard import allow_write
+        allow_write('上传文件')
         file_path = file_path or config.get('testcase', 'upload_file')
         if not file_path:
             raise ValueError('未配置上传文件路径（config.ini -> [testcase] upload_file）')
