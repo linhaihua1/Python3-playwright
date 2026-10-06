@@ -334,6 +334,73 @@ def print_failure_digest(result):
     print('')
 
 
+def _collect_allure(result, run_start):
+    """从 unittest 结果对象收集 Allure 格式结果文件。
+
+    遍历 result 的成功/失败/错误/跳过列表，为每条用例写一个
+    allure-results/<uuid>-result.json。失败用例自动关联最近截图。
+    """
+    from Common.allureReport import _write_result, _build_result, write_attachment
+    import os as _os
+    from Common.dir_config import img_dir
+
+    base_ms = int(run_start * 1000)
+    counter = [0]
+
+    def _case_ms():
+        """给每条用例分配一个递增的时间戳（没有精确计时时用相对值）。"""
+        counter[0] += 1
+        return base_ms + counter[0] * 100, base_ms + counter[0] * 100 + 50
+
+    # 成功用例：result.successes 是列表，元素是 test 对象（不同 unittest 版本结构不同）
+    successes = getattr(result, 'successes', [])
+    for item in successes:
+        test = item[0] if isinstance(item, tuple) else item
+        s, e = _case_ms()
+        _write_result(_build_result(test, 'success', s, e))
+
+    # 失败
+    for test, tb in result.failures:
+        s, e = _case_ms()
+        attaches = _maybe_attach_screenshot(img_dir, write_attachment)
+        err = (AssertionError, AssertionError(tb), None)
+        _write_result(_build_result(test, 'failure', s, e, err, attaches))
+
+    # 错误
+    for test, tb in result.errors:
+        s, e = _case_ms()
+        attaches = _maybe_attach_screenshot(img_dir, write_attachment)
+        err = (Exception, Exception(tb), None)
+        _write_result(_build_result(test, 'error', s, e, err, attaches))
+
+    # 跳过
+    for test, reason in result.skipped:
+        s, e = _case_ms()
+        _write_result(_build_result(test, 'skip', s, e))
+
+    log1.info('Allure 结果已生成到 allure-results/，共 %d 条用例'
+              % (len(successes) + len(result.failures) + len(result.errors) + len(result.skipped)))
+
+
+def _maybe_attach_screenshot(img_dir, write_attachment):
+    """尝试关联最近的失败截图到 Allure 结果。"""
+    try:
+        import os as _os, time as _time
+        if not _os.path.isdir(img_dir):
+            return None
+        pngs = sorted(
+            (_os.path.join(dp, f) for dp, _, fs in _os.walk(img_dir) for f in fs if f.endswith('.png')),
+            key=_os.path.getmtime, reverse=True)
+        if pngs and (_time.time() - _os.path.getmtime(pngs[0])) < 120:
+            with open(pngs[0], 'rb') as f:
+                src = write_attachment('失败截图', f.read())
+                if src:
+                    return [{'name': '失败截图', 'source': src, 'type': 'image/png'}]
+    except Exception:
+        pass
+    return None
+
+
 def run(tests_dir=None, pattern=None, title=None, report_name=None,
         tester=None, description=None, send_mail=False,
         suite_kind='full', cases=None, junit=None):
@@ -475,6 +542,15 @@ def run(tests_dir=None, pattern=None, title=None, report_name=None,
             # XML 生成失败不影响 HTML 报告和退出码，仅记日志
             # （但 Jenkins 的 junit 步骤会因此拿不到结果，需要在流水线日志里排查）
             log1.error('JUnit XML 生成失败', exc_info=1)
+
+    # ---- 5.5 可选：生成 Allure 结果（--allure 开启时）----
+    try:
+        from Common import allureReport
+        if allureReport.is_enabled():
+            _collect_allure(result, run_start)
+    except BaseException:
+        # Allure 生成失败不影响主流程
+        log1.error('Allure 结果生成失败', exc_info=1)
 
     # ---- 6. 可选：发送邮件 ----
     if send_mail:

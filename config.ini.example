@@ -259,6 +259,9 @@ report_dir = Report
 junit_filename = junit-results.xml
 # 失败截图根目录（相对工程根，内部再按日期分子目录）
 img_dir = img
+# Allure 结果目录（相对工程根）。--allure 开启时结果写到此目录，
+# 用 `allure serve allure-results` 查看可视化报告
+allure_results_dir = allure-results
 
 
 # --------------------------------------------------------------------------

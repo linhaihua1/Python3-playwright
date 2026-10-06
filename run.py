@@ -117,6 +117,11 @@ def parse_args(argv=None):
                         help='并行执行的进程数（默认 1，串行）；'
                              '大于 1 时按用例文件拆分到多进程并行跑')
 
+    # ---- Allure 报告 ----
+    parser.add_argument('--allure', action='store_true',
+                        help='额外生成 Allure 格式结果（allure-results/），'
+                             '可用 allure serve 查看可视化报告，不影响现有 HTML/JUnit 报告')
+
     # ---- 多系统切换 ----
     # 一套框架管理多个被测系统：在 config.ini 里为每个系统建一个 [system_名称] 段，
     # 填 url / username / password / pattern 等，用 --system 名称 一键切换。
@@ -240,6 +245,11 @@ if __name__ == '__main__':
     # 0) 初始化运行上下文：生成唯一 runId，隔离产物目录（防并发覆盖）
     from Common import runContext
     runContext.init()
+
+    # 0.3) Allure 报告：--allure 开启时额外生成可视化结果
+    if args.allure:
+        from Common import allureReport
+        allureReport.enable()
 
     # 0.5) 环境安全防护：--env prod 或 URL 命中生产特征时自动开启只读模式
     from Common import envGuard
