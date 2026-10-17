@@ -54,8 +54,13 @@ import unittest
 
 from Common import ci as ci_env
 from Common.config import Config, ConfigMissingError
-from Common.dir_config import (base_dir, ensure_dir, htmlreport_dir,
-                               junitreport_file, testcases_dir)
+# 注意：htmlreport_dir / junitreport_file 刻意**不从 dir_config 顶层导入**。
+# 这两个路径会被 runContext.init() 按 runId 改写（产物隔离），
+# 而 from-import 在本模块 import 时就把旧值复制进了命名空间，
+# 之后 dir_config 再怎么改都影响不到这里 —— 隔离会被静默架空。
+# 必须以 dir_config.<属性> 的方式在**使用时**取值。
+from Common import dir_config as _dir_config
+from Common.dir_config import base_dir, ensure_dir, testcases_dir
 from Common.HTMLTestReportCN import HTMLTestRunner
 from Common.junitReport import JUnitResult, write_junit_xml
 from Common.log import log1
@@ -234,6 +239,41 @@ def find_broken_modules(suite):
     return broken
 
 
+def _case_has_ddt(case):
+    """判断一条用例的方法是否带 @data_driven 数据集标记。【内部】"""
+    cls = type(case)
+    for name in dir(cls):
+        method = getattr(cls, name, None)
+        if callable(method) and getattr(method, '_ddt_dataset', None) is not None:
+            return True
+    return False
+
+
+def expand_ddt_suite(suite):
+    """把 suite 里所有带 @data_driven 的用例展开成「每组数据一条」。【内部】
+
+    ★ 为什么收集后要专门展开（验收实测发现的断链）：
+      @data_driven 只在方法上打 `_ddt_dataset` 标记，真正展开靠
+      dataDriver.expand_ddt_cases。以前这一步没有接入 build_suite ——
+      装饰过的用例会被 unittest 按普通方法调用，而它的签名是
+      (self, row)，缺 row 直接 TypeError，整条用例报错。
+      也就是说：数据驱动的 API 和文档都在，执行链路却是断的。
+      现在在收集阶段统一展开，让这个功能真正闭环。
+    """
+    from Common.dataDriver import expand_ddt_cases
+
+    items = list(_iter_cases(suite))
+    if not any(_case_has_ddt(c) for c in items):
+        return suite
+    expanded = []
+    for case in items:
+        if _case_has_ddt(case):
+            expanded.append(expand_ddt_cases(case))
+        else:
+            expanded.append(case)
+    return unittest.TestSuite(expanded)
+
+
 def build_suite(tests_dir=None, pattern='test*.py', cases=None):
     """扫描用例目录，把用例收集成一个 TestSuite。
 
@@ -288,6 +328,15 @@ def build_suite(tests_dir=None, pattern='test*.py', cases=None):
 
     if cases:
         suite = filter_suite(suite, cases)
+
+    # 数据驱动展开：@data_driven 标记的用例在这里变成「每组数据一条」。
+    # 没有该标记的用例原样返回（零开销），整个框架行为不变。
+    suite = expand_ddt_suite(suite)
+
+    # 依赖守卫接入：@depends_on 标记的用例在前置失败时自动跳过，
+    # 而不是连环失败。无依赖标记的 suite 原样返回（零开销）。
+    from Common.dependency import wrap_suite_with_dependency_guard
+    suite = wrap_suite_with_dependency_guard(suite)
     return suite
 
 
@@ -299,16 +348,27 @@ def resolve_junit_path(junit=None):
 
     默认取 config.ini -> [ci] junit_xml；该项**没配或留空**时，
     自动按 [paths] report_dir + junit_filename 拼出（路径单一来源，见 dir_config）。
+
+    ★ 相对路径与产物隔离的关系（验收实测发现的分裂）：
+      产物隔离（runId 子目录）开启时，HTML 报告进了 Report/<runId>/，
+      而显式配置的相对路径 junit_xml 若仍相对工程根解析，就会落在
+      Report/ 根下 —— 两个并发构建照样互相覆盖 JUnit 结果，
+      隔离等于只做了一半。所以相对路径改为**随报告目录**解析：
+      写文件名即与 HTML 报告同住隔离子目录；写绝对路径则原样尊重
+      （那是调用方明确的归档意图，不参与隔离）。
     """
     if junit is None:
         junit = Config.get('ci', 'junit_xml', '')
         if not str(junit).strip():
-            junit = junitreport_file
+            junit = _dir_config.junitreport_file
     junit = str(junit).strip()
     if not junit or junit.lower() in ('none', 'off', 'false', '0', 'no'):
         return None
     if not os.path.isabs(junit):
-        junit = os.path.join(base_dir, junit)
+        # 相对路径 -> 随 HTML 报告所在目录（隔离时即 Report/<runId>/）。
+        # 兼容旧写法 'Report/xxx.xml'：报告根已是 Report/<runId>，
+        # 直接 join 会套出 Report/<runId>/Report/，所以取文件名即可。
+        junit = os.path.join(_dir_config.htmlreport_dir, os.path.basename(junit))
     # normpath 统一路径分隔符：配置里可能写成 'Report/xxx.xml'，
     # 在 Windows 上归一化后日志和 Jenkins 展示都更干净
     return os.path.normpath(junit)
@@ -491,7 +551,7 @@ def run(tests_dir=None, pattern=None, title=None, report_name=None,
         return _summary(exit_code=EXIT_ENV_ERROR, tests_run=0, duration=time.time() - run_start)
 
     # ---- 3. 准备报告文件（目录不存在会自动创建）----
-    report_path = os.path.join(ensure_dir(htmlreport_dir), report_name)
+    report_path = os.path.join(ensure_dir(_dir_config.htmlreport_dir), report_name)
     junit_path = resolve_junit_path(junit)
     log1.info('测试报告将生成至：%s' % report_path)
     if junit_path:
@@ -500,6 +560,15 @@ def run(tests_dir=None, pattern=None, title=None, report_name=None,
     # ---- 4. 执行 + 出报告 ----
     # 报告模板要求以二进制流写入，所以用 'wb'
     # with 语句保证异常时文件也能正常关闭（旧版手动 fp.close()，出错会漏关）
+    # flaky 重试接入：全局配置 [ci] flaky_retry > 0，或 suite 里有 @flaky
+    # 标记的用例时，把重试能力混入结果类。重试发生在报告流程内，
+    # HTML / JUnit / 退出码三份证据天然一致（详见 flakyRetry 模块说明）。
+    from Common.flakyRetry import make_flaky_result_class, suite_needs_retry
+    resultclass = JUnitResult
+    if Config.get_int('ci', 'flaky_retry', 0) > 0 or suite_needs_retry(suite):
+        resultclass = make_flaky_result_class(JUnitResult)
+        log1.info('已启用用例级 flaky 重试（[ci] flaky_retry 或 @flaky 标记）')
+
     try:
         with open(report_path, 'wb') as fp:
             runner = HTMLTestRunner(
@@ -508,7 +577,7 @@ def run(tests_dir=None, pattern=None, title=None, report_name=None,
                 description=description,
                 tester=tester,
                 # ★ 关键：注入自定义结果类，一次执行同时产出 HTML 与 JUnit XML 两份报告
-                resultclass=JUnitResult,
+                resultclass=resultclass,
             )
             result = runner.run(suite)  # 真正开始跑用例，此处耗时最长
         log1.info('测试执行结束，HTML 报告生成成功')

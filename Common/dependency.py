@@ -141,3 +141,78 @@ _global_tracker = DependencyTracker()
 
 def global_tracker():
     return _global_tracker
+
+
+# ===========================================================================
+# 套件级接入：把依赖守卫织进 runner 的执行链路（企业级接入点）
+#
+# 【为什么以前没生效（验收实测发现的断链）】
+#   @depends_on 只在方法上打标记，should_skip 的判定需要有人在
+#   每条用例执行前后调用 —— 但 runner 的执行循环在 HTMLTestRunner
+#   内部，框架层从来没有真正接上。结果：前置用例失败后，依赖它的
+#   用例照样跑、照样连环失败，报告里"失败 1 跳过 5"的承诺是空的。
+# ===========================================================================
+def _wrap_case_with_guard(case, tracker):
+    """给单条用例包一层依赖守卫：执行前查跳过、执行后记录结果。【内部】
+
+    为什么包装实例的 run 而不是改 result 类：
+      依赖跳过必须发生在**用例执行之前**，而 result 的钩子都在
+      用例已经开跑之后才触发。HTMLTestRunner 的循环是
+      `for test in suite: test.run(result)`，包装实例 run 是唯一
+      不侵入报告模板、又能拦在执行前的接入点。
+    """
+    import types
+    original_run = case.run
+
+    def guarded_run(bound_case, result=None):
+        # ★ 第一个参数是 MethodType 绑定时隐式传入的 case 实例本身，
+        #   不是 result —— 签名少写这一位，unittest 调用就会报
+        #   "takes 0 to 1 positional arguments but 2 were given"。
+        skip, reason = tracker.should_skip(bound_case)
+        if skip and result is not None:
+            result.startTest(bound_case)
+            result.addSkip(bound_case, reason)
+            result.stopTest(bound_case)
+            return
+        original_run(result)
+        # 用例跑完后登记结果，供后续用例的 should_skip 判定。
+        # 注意 record 从 result 的失败清单推断 —— 若 flaky 重试成功，
+        # 用例不在 failures 里，会正确记为通过，两个特性天然兼容。
+        if result is not None:
+            tracker.record(bound_case, result)
+
+    case.run = types.MethodType(guarded_run, case)
+    return case
+
+
+def wrap_suite_with_dependency_guard(suite, tracker=None):
+    """给 suite 里所有带 @depends_on 标记的用例装上依赖守卫。
+
+    :param suite:   unittest.TestSuite
+    :param tracker: DependencyTracker；不传用模块级单例
+    :return: 装好守卫的 TestSuite（无依赖标记时原样返回，零开销）
+
+    在 Common/runner.py 的 build_suite 里调用：
+        suite = wrap_suite_with_dependency_guard(suite)
+    """
+    import unittest
+    tracker = tracker or global_tracker()
+
+    def _iter(s):
+        for item in s:
+            if isinstance(item, unittest.TestSuite):
+                yield from _iter(item)
+            else:
+                yield item
+
+    cases = list(_iter(suite))
+    has_dep = any(
+        getattr(getattr(type(c), getattr(c, '_testMethodName', ''), None),
+                '_depends_on', None)
+        for c in cases)
+    if not has_dep:
+        return suite
+
+    guarded = unittest.TestSuite(
+        _wrap_case_with_guard(c, tracker) for c in cases)
+    return guarded

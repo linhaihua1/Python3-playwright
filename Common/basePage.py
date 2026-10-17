@@ -523,7 +523,8 @@ class BasePage:
                 # 快速通道：立即判定 DOM 中是否存在（visible=True 时再要求可见）
                 if locator.count() == 0:
                     raise PlaywrightTimeoutError('元素不存在（立即判定）')
-                if visible and not locator.first.is_visible():
+                target = self._pick_target(locator, pw_sel)
+                if visible and not target.is_visible():
                     raise PlaywrightTimeoutError('元素存在但不可见（立即判定）')
             else:
                 # 显式等待：元素一出现就继续，不等满超时
@@ -531,11 +532,74 @@ class BasePage:
                     state='visible' if visible else 'attached',
                     timeout=(timeout or self.timeout) * 1000,
                 )
+                target = self._pick_target(locator, pw_sel)
             log1.info('元素定位成功。定位方式：%s，使用的值：%s' % (by, value))
-            return locator.first
+            return target
         except (PlaywrightTimeoutError, PlaywrightError):
             log1.error('没有定位到元素,定位方式：%s，使用的值：%s' % (by, value), exc_info=1)
             return None
+
+    def _pick_target(self, locator, pw_selector):
+        """在多个候选里挑出**最可能**是调用方意图的那个。【内部】
+
+        【为什么需要这个方法 —— 来自一次真实故障】
+            定位表达式常常是若干分支的联合（xpath 的 `|`），例如
+                //*[@id='uploader-btn']//i | //*[@id='uploader-btn']
+            意图很明确：要**内部那个 i 图标**。但 xpath 联合与 Playwright
+            的 `.first` 都是**文档顺序**，容器 label/div 永远排在它的
+            内部元素前面，于是拿到的是外层容器 —— 点它等于点了个空壳，
+            页面毫无反应。这类故障最难自查："元素找到了"却"没生效"。
+
+        【踩过的坑：xpath 层面无法控制顺序】
+            曾尝试把首分支写成 `(A)[1] | B` 强制它排到最前 ——
+            实测无效，Playwright 会在拿到节点集后按文档序重排，
+            `.first` 拿到的仍然是容器。`(A)` 不带索引也不行。
+            结论：**顺序只能在框架层解决，xpath 层做不到**。
+
+        【做法】
+            先单独定位首个分支，命中就用它；没命中才退回整条表达式的 first。
+            首个分支天然表达"调用方真正想要的"，兜底分支保证不会因为
+            首选不存在而整个定位失败。
+
+        :param locator:     Playwright Locator（整条联合表达式）
+        :param pw_selector: 传给 Playwright 的完整选择器字符串
+        :return: Locator（多数情况与 first 指向同一元素）
+        """
+        if pw_selector.startswith('xpath='):
+            body = pw_selector[len('xpath='):]
+            if ' | ' in body or body.startswith('|'):
+                branches = [b.strip() for b in body.split('|') if b.strip()]
+                if len(branches) > 1:
+                    try:
+                        # probe=True：这是框架为正确性补发的探测调用，
+                        # 不是用例的业务动作，不该出现在"操作顺序"断言里。
+                        # 真实 Playwright 的 locator() 不认这个参数，
+                        # 框架靠"尝试传、TypeError 则去掉"来兼容（见 __init__ 注释）。
+                        narrow = self._locator_probe('xpath=' + branches[0])
+                        if narrow.count() > 0:
+                            log1.info('定位命中多个候选，已选用首个分支：%s' % branches[0])
+                            return narrow.first
+                    except PlaywrightError:
+                        # 首选分支定位失败不该影响主流程，退回整条表达式
+                        pass
+        return locator.first
+
+    def _locator_probe(self, selector):
+        """构造一个**探测用**的 Locator（不计入用例层看到的操作序列）。
+
+        为什么需要这个方法：
+            _pick_target 要在多个候选里挑首个分支，必须再发一次定位。
+            这对正确性是必需的（xpath 层面控制不了顺序），
+            但它不是用例的业务动作，不该污染「页面操作顺序」断言。
+
+        实现：优先尝试带 probe 标记的调用（测试替身认这个参数），
+        真实 Playwright 不认会抛 TypeError，此时退回普通调用 ——
+        代价是这次探测会被记录到日志，但不影响功能正确性。
+        """
+        try:
+            return self._surface().locator(selector, probe=True)
+        except TypeError:
+            return self._surface().locator(selector)
 
     def get_elements(self, selector, timeout=None):
         """定位一组元素（如表格的每一行），未找到返回空列表。【预留】
@@ -786,6 +850,22 @@ class BasePage:
         log1.info('获取的value：%s' % value)
         return value
 
+    def goto(self, url=None):
+        """让浏览器导航到指定地址；不传 url 则用配置里的 [environment] url。
+
+        为什么需要这个方法：以前只有 open_browser() 内部会导航，
+        想在同一个浏览器实例里换地址（比如用例中途跳到另一个系统），
+        只能直接写 self.driver.goto()，等于绕过分层。
+        收进基类后，页面对象层就能安全表达"跳到某地址"这个动作。
+
+        :param url: 目标地址；留空则读 config.ini -> [environment] url
+        :raise ConfigMissingError: url 没传且配置里也没配地址
+        """
+        if not url:
+            url = Config.require('environment', 'url', '导航目标地址（可传参传入）')
+        self.driver.goto(url)
+        log1.info('导航到：%s' % url)
+
     def refresh(self):
         """刷新当前页面（等价迁移前用例里的 driver.refresh()）。【在用（testLogin 用例6）】
 
@@ -983,11 +1063,15 @@ class BasePage:
         截图根目录名可配：config.ini -> [paths] img_dir（默认 img）。
         命名规则：img/2026-09-25/2026-09-25 120718.png（秒级时间戳，天然不重名）
         用例断言失败时会自动调用它，是最常用的排错线索。
+
+        ★ 路径为什么从 dir_config 取而不是自己拼（验收实测发现的缺陷）：
+          以前这里自己 join 一次 img_dir，绕过了 runContext 的产物隔离 ——
+          结果报告/日志都进了 runId 子目录、唯独截图留在 img/ 根下，
+          并发构建时截图互相覆盖。产物路径必须单一来源（dir_config），
+          隔离逻辑才不会出现"漏网之鱼"。
         """
-        img_path = os.path.join(getcwd.get_cwd(),
-                                config.get('paths', 'img_dir', 'img'))
-        local_date = time.strftime('%Y-%m-%d', time.localtime(time.time()))
-        date_file_path = os.path.join(img_path, local_date)
+        from Common.dir_config import img_dir     # 函数内 import：取运行时最新值
+        date_file_path = os.path.join(img_dir, time.strftime('%Y-%m-%d'))
         if not os.path.exists(date_file_path):
             os.makedirs(date_file_path)
         local_time = time.strftime('%Y-%m-%d %H%M%S', time.localtime(time.time()))

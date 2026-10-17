@@ -60,6 +60,9 @@ class TestMaterialCheck(unittest.TestCase):
     # 缺配置会在 setUpClass 阶段直接报错并指明该配哪个键（零硬编码纪律）。
     title_material = None
 
+    # 用例中文名：来自 config.ini [case_names]，与 testLogin.py 共用同一段配置
+    case_names = None
+
     # ---------------------------------------------------------------------- #
     # 前置 / 后置：整个类只执行一次
     # ---------------------------------------------------------------------- #
@@ -69,7 +72,14 @@ class TestMaterialCheck(unittest.TestCase):
         # ---- 1. 从配置读参数（业务数据缺失即报错，绝不硬编码账号/标题）----
         cls.username, cls.password = Config.get_account()
         cls.title_material = Config.require('assert', 'title_material',
-                                            '进入素材库后页面标题的期望值')
+                                            '进入目标页面后的标题期望值')
+
+        # 用例中文名：日志与报告里的显示文字，同样属于业务数据
+        cls.case_names = {
+            'ready': Config.get('case_names', 'material', 'test_1ready'),
+            'controls': Config.get('case_names', 'controls', 'test_2controls'),
+            'keyword': Config.get('case_names', 'keyword_input', 'test_3keyword'),
+        }
 
         # ---- 2. 打开浏览器 ----
         cls.base = BasePage()
@@ -97,18 +107,24 @@ class TestMaterialCheck(unittest.TestCase):
     # 通用断言：失败时自动截图 + 打 ERROR 日志，方便事后回溯
     # ---------------------------------------------------------------------- #
     def check_title(self, case_name, expected):
-        """断言当前页面标题等于预期值。
+        """断言当前页面标题符合预期。
 
         :param case_name: 用例中文名，只用于日志可读性
-        :param expected:  期望的页面标题
+        :param expected:  期望的页面标题关键字（来自 config.ini [assert]）
+
+        ★ 匹配方式由 [assert] match_mode 决定（exact/contains/regex），
+          不是写死的相等判断 —— 配置里只写稳定不变的关键字即可。
         """
         actual = self.page.get_title()
-        try:
-            self.assertEqual(actual, expected)
-        except AssertionError:
-            log1.error('用例失败:%s，期望[%s] 实际[%s]\n' % (case_name, expected, actual))
+        mode = Config.get_match_mode()
+        if not Config.match_title(actual, expected, mode):
+            log1.error('用例失败:%s，期望[%s] 实际[%s]（匹配模式：%s）\n'
+                       % (case_name, expected, actual, mode))
             self.page.get_img()     # ★ 失败瞬间截图，这是排错最有效的证据
-            raise
+            raise AssertionError('标题不匹配（模式 %s）：期望[%s] 实际[%s]'
+                                 % (mode, expected, actual))
+        log1.info('用例成功:%s（期望[%s] 实际[%s] 模式[%s] 已匹配）\n'
+                  % (case_name, expected, actual, mode))
 
     # ====================================================================== #
     # 用例
@@ -119,7 +135,7 @@ class TestMaterialCheck(unittest.TestCase):
         这是"守卫断言"：不先确认到了正确的页面，
         后面的控件检查失败时分不清是"页面不对"还是"元素改版"。
         """
-        case_name = '进入素材库'
+        case_name = self.case_names['ready']
         log1.info('执行测试用例：%s' % case_name)
         self.check_title(case_name, self.title_material)
 
@@ -130,7 +146,7 @@ class TestMaterialCheck(unittest.TestCase):
         那样失败时只告诉你"有东西少了"，不说少哪个。
         先收集出缺失清单再断言为空，失败信息直接可用。
         """
-        case_name = '查询区控件齐全'
+        case_name = self.case_names['controls']
         log1.info('执行测试用例：%s' % case_name)
 
         ready = self.page.query_form_ready()
@@ -138,7 +154,7 @@ class TestMaterialCheck(unittest.TestCase):
 
         if missing:
             self.page.get_img()     # 缺控件时先截图再断言失败
-        self.assertEqual(missing, [], '素材库查询区缺少这些控件：%s' % missing)
+        self.assertEqual(missing, [], '查询区缺少这些控件：%s' % missing)
 
     def test_3keyword(self):
         """用例3：关键字能真的填进去，重置后能真的清空。
@@ -147,7 +163,7 @@ class TestMaterialCheck(unittest.TestCase):
         只有把值读回来比对过，才算真的验证过。
         读值用 get_value()（读控件 value），不是 get_text()（读显示文字）。
         """
-        case_name = '关键字输入与重置'
+        case_name = self.case_names['keyword']
         log1.info('执行测试用例：%s' % case_name)
 
         keyword = Config.require('testcase', 'query_keyword')

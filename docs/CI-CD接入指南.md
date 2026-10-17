@@ -224,6 +224,9 @@ stage('构建后触发冒烟测试') {
 | `UI_REPORT_TITLE` / `UI_REPORT_FILENAME` / `UI_REPORT_TESTER` / `UI_REPORT_DESCRIPTION` | `[report] *` | 报告元信息（**必填**） | `每日冒烟报告` |
 | `UI_TIMING_*` | `[timing] *` | 用例各步骤等待秒数（技术参数，CI 慢时整体调大，如 `UI_TIMING_MENU_LOAD=5`） | `5` |
 | `UI_TUNING_*` | `[tuning] *` | 视口、轮询间隔等调优参数（如 `UI_TUNING_VIEWPORT=1366x768`） | `1366x768` |
+| `UI_LOCATORS_*` | `[locators] *` | 元素界面文案（按钮文字/菜单名），如 `UI_LOCATORS_BTN_LOGIN=登入` | `登录` |
+| `UI_CASE_NAMES_*` | `[case_names] *` | 用例在报告里的显示名，如 `UI_CASE_NAMES_LOGIN=登入成功` | `登录成功` |
+| `UI_RUN_ID` | — | 指定本次执行的 runId（产物隔离子目录名），CI 上可用构建号，归档路径可预测 | `build-1234` |
 
 > 💡 注意**"必填缺失"与"用例失败"在流水线里要区别对待**：业务配置没配时框架直接
 > ABORTED（退出码 2，用例根本没跑），Jenkins 应把它标为需人工介入的环境问题（见第十一章），

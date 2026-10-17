@@ -79,7 +79,7 @@ Jenkins 直接用它判定构建成败。详见 [CI-CD 接入指南](docs/CI-CD�
 | 2 | `Common/runner.py` | 测试怎么被收集、执行、出报告，退出码怎么来 |
 | 3 | `TestSuites/testLogin.py` | **在测什么业务**（最重要的一个文件） |
 | 4 | `PageObject/loginPage.py` | 每个业务动作怎么操作页面 |
-| 5 | `Common/elementPage.py` | 元素定位值放在哪、哪个最脆弱 |
+| 5 | `Common/elementPage.py` | 元素定位策略（界面文案都在 config.ini 的 `[locators]` 段） |
 | 6 | `Common/basePage.py` | 浏览器操作怎么封装（唯一直接调 Playwright 的文件） |
 | 7 | `Common/config.py` | 配置怎么读、环境变量怎么覆盖 |
 | 8 | `Common/log.py` | 日志写去哪、怎么看 |
@@ -118,7 +118,7 @@ Jenkins 直接用它判定构建成败。详见 [CI-CD 接入指南](docs/CI-CD�
 ```
 ├── Common/                     公共层
 │   ├── basePage.py             基类：浏览器、定位、交互、上传、截图（唯一直接调 Playwright）
-│   ├── elementPage.py          元素表：全工程 xpath 集中地
+│   ├── elementPage.py          元素表：定位策略 + 从 [locators] 动态取值（全工程 xpath 集中地）
 │   ├── runner.py               执行器：收集用例 → 执行 → 出 HTML 报告 + JUnit XML
 │   ├── config.py               config.ini 读写 + UI_* 环境变量覆盖
 │   ├── configOverWriter.py     定制 ConfigParser（保留键大小写 + 关闭 % 插值）
@@ -140,7 +140,8 @@ Jenkins 直接用它判定构建成败。详见 [CI-CD 接入指南](docs/CI-CD�
 │   ├── helpers.py              测试基座：假 Page(FakePage/FakeLocator)、临时目录隔离、沙盒
 │   ├── samples.py              样例用例类（故意失败/出错等，不参与收集）
 │   ├── run_unit_tests.py       一键入口：python tests/run_unit_tests.py
-│   └── test_*.py               15 个模块的测试（含测试基座自检）
+│   ├── test_dynamic_config.py  静态数据动态化的守门测试（防止业务文案回流进代码）
+│   └── test_*.py               其余模块的测试（含测试基座自检）
 ├── docs/                       使用文档 + CI/CD 接入指南
 ├── Logs/  img/  Report/        运行产物（已 gitignore）
 ├── config.ini                  本地配置（含账号密码，已 gitignore）
@@ -217,7 +218,13 @@ python run.py --help                               # 全部参数
   一律 `Config.require` 读取 —— 没配就报错，报错文案直接给出「段 + 键 + 对应环境变量」，退出码 2。
 - **技术参数**（超时、轮询间隔、视口、目录名）：`Config.get / get_int / get_float` 读取，
   代码里有合理默认值 —— 不配也能跑，配置只为按环境调优。
-- **元素 xpath** 是定位代码，集中在 `Common/elementPage.py`，不进配置文件。
+- **元素定位**分两层，都不进代码里的业务字面量：
+  - **界面文案**（按钮文字、菜单名、placeholder 关键词）→ `config.ini` 的 `[locators]` 段；
+  - **定位策略**（怎么按文字/属性/id 找）→ `Common/elementPage.py` 的策略函数，
+    只回答"怎么找"，不回答"找哪个词"。换系统时策略不用改。
+
+**换系统要改的地方，现在只有 config.ini**（地址、账号、文案、断言、报告元信息），
+代码一个字都不用动 —— 这是 `[locators]` 段存在的意义。
 
 常用几项：
 
@@ -227,7 +234,11 @@ python run.py --help                               # 全部参数
 | `[testcase]` | `login_username` / `login_password` | 登录账号（**必填**，CI 上用环境变量注入） |
 | `[testcase]` | `upload_file` / `query_keyword` / `phone` / `reporting` | 上传视频路径、查询关键字、表单字段（均**必填**；`video_author` 可留空自动用账号） |
 | `[testcase]` | `upload_mode` | `set_input_files`（默认，推荐，直接赋值；旧值 `send_keys` 等价）/ `autoit`；技术参数 |
-| `[assert]` | `title_login` / `title_workbench` / `title_material` | 断言用的期望标题（**必填**）；换系统只改这里 |
+| `[assert]` | `title_login` / `title_workbench` / `title_material` | 断言用的期望标题**关键字**（**必填**）；换系统只改这里 |
+| `[assert]` | `match_mode` | 标题匹配方式：`exact` / `contains`（默认）/ `regex`；技术参数 |
+| `[locators]` | `btn_login` / `menu_first_level` / `field_keyword` … | **元素界面文案**（按钮文字、菜单名、placeholder 关键词），换系统只改这段 |
+| `[locators]` | `<键名>_xpath` | 可选，直接给完整定位表达式，覆盖框架的默认策略 |
+| `[case_names]` | `login` / `upload` / `submit` … | 用例在报告里的中文名（可全留空，则显示 unittest 方法名） |
 | `[system]` | `username_placeholder` 等 | GenericPage 接入新系统的"文案特征"（前三项**必填**） |
 | `[report]` | `title` / `filename` / `tester` / `description` | 报告元信息（**必填**，`--title` 等参数可覆盖） |
 | `[entrance]` | `title` | entrance.py 备用入口的报告主题（用该入口时**必填**，不再写死在代码） |
@@ -238,6 +249,36 @@ python run.py --help                               # 全部参数
 | `[tuning]` | `viewport` / `window_poll_interval` / `notify_timeout` 等 | 浏览器与框架的调优参数（可选，带默认值） |
 | `[timing]` | `menu_load` / `upload_progress` 等 | 用例各步骤的页面节奏等待秒数 —— 慢环境调大、快环境调小（可选，带默认值） |
 | `[sender]` / `[addressed]` | `mail_subject` / `mail_body` 等 | 邮件发件人（含 SMTP 授权码）、收件人、主题/正文模板（`{date}` `{filename}` 占位） |
+
+### 元素定位怎么配（`[locators]` 段）
+
+三种写法，按需要选：
+
+```ini
+[locators]
+; ① 纯数据（最常用）：只写界面文字，框架自动拼 xpath
+btn_login = 登录
+
+; ② 多值数据：用竖线分隔，命中任一即可
+field_keyword = 关键字|关键词|搜索
+
+; ③ 完整定位表达式：键名加 _xpath 后缀，覆盖框架策略
+btn_login_xpath = //button[normalize-space(text())='登 录']
+```
+
+两点省心设计：
+
+- **按钮文字不用数空格**：框架对按钮类文案用 `translate()` 去空格后比对，
+  配置里写 `报送` 也能命中页面上排版成「报 送」的按钮。
+- **`${key}` 插值**：表达式可引用同段其它键，改一处、依赖它的定位全部跟着变。
+
+```ini
+uploader_btn_id = global-uploader-btn
+btn_upload_dialog_xpath = //label[@id='${uploader_btn_id}']/i
+```
+
+断言标题同理：配置里只写稳定不变的关键字（`云媒资系统`），
+由 `[assert] match_mode` 决定比对方式，页面标题带版本号也不会误判。
 
 ### 环境变量覆盖（CI 的关键机制）
 
@@ -297,8 +338,8 @@ python tests/run_unit_tests.py --junit Report/unit-tests.xml   # 流水线用
 ```
 
 - 退出码与 `run.py` 一致：`0` 通过、`1` 有失败
-- 当前覆盖 **439 项 / 18 个模块**：配置、日志、CI 适配、元素表、基类、执行器、JUnit 报告、
-  报告模板、邮件、页面对象、用例层结构、命令行入口、测试基座自检
+- 当前覆盖 **519 项 / 19 个模块**：配置、日志、CI 适配、元素表、基类、执行器、JUnit 报告、
+  报告模板、邮件、页面对象、用例层结构、命令行入口、测试基座自检、**静态数据动态化**
 - 全程 2 秒左右，跑完不留痕：不写工程 `Logs/`、不在系统临时目录留垃圾目录
   （日志走 `UI_LOG_DIR` 重定向，临时目录登记到 `atexit` 统一回收）
 - 流水线里的 `框架单元测试` stage 已经接好（见 `Jenkinsfile`），比 UI 用例更早发现问题
@@ -355,7 +396,8 @@ python tests/run_unit_tests.py --junit Report/unit-tests.xml   # 流水线用
 - 用例之间无数据隔离，任一步失败会导致后续用例连续失败 —— 排错时优先修**最早失败**的那条。
 - 断言以页面标题为主，业务数据（上传成功、查询命中数、报送状态）未被断言；
   `BasePage.get_text()` 已提供能力，可逐步补强。
-- 元素定位以绝对 xpath 为主，建议逐条替换为相对/语义定位（按文本、按属性）。
+- 元素定位已全面改为「配置给文案 + 代码给策略」，但仍建议新写定位优先用 id / 属性，
+  别急着依赖文字匹配（产品改字就会失效）。文字只写那些确实稳定的菜单/按钮名。
 - 因用例强串行依赖，**不适合**做单用例失败重试；若将来用例解耦可引入。
 - `config.ini` 本地为明文，建议本机也不要放生产账号；CI 上统一用 Jenkins 凭据。
 - 可删的遗留文件（全工程零引用）：`Common/HTMLTestRunnerNew.py`、

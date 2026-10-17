@@ -87,6 +87,10 @@ class TestLogin(unittest.TestCase):
     title_material = None
     query_keyword = None
 
+    # 用例中文名：来自 config.ini [case_names]，用于日志与报告可读性。
+    # 同样属于业务数据（不同项目的叫法不同），不该钉死在代码里。
+    case_names = None
+
     # ---------------------------------------------------------------------- #
     # 前置 / 后置：整个类只执行一次（区别于每条用例都跑的 setUp / tearDown）
     # ---------------------------------------------------------------------- #
@@ -101,6 +105,17 @@ class TestLogin(unittest.TestCase):
         cls.phone = Config.require('testcase', 'phone')            # 手机号
         cls.reporting = Config.require('testcase', 'reporting')    # 上报单位
         cls.query_keyword = Config.require('testcase', 'query_keyword')  # 查询关键字
+
+        # ---- 1.05 用例中文名：日志与报告里显示，改配置即可换叫法 ----
+        #   允许留空（此时回落到方法名），但既然叫"报告给人看"，配一下更友好
+        cls.case_names = {
+            'login': Config.get('case_names', 'login', 'test_1login'),
+            'enter': Config.get('case_names', 'enter_system', 'test_2select_scxt'),
+            'material': Config.get('case_names', 'material', 'test_3material'),
+            'upload': Config.get('case_names', 'upload', 'test_4uplaodbutton'),
+            'query': Config.get('case_names', 'query', 'test_5keyword'),
+            'submit': Config.get('case_names', 'submit', 'test_6submitted'),
+        }
 
         # ---- 1.1 断言期望值：换系统只改配置，代码里零业务字面量 ----
         cls.title_login = Config.require('assert', 'title_login',
@@ -126,24 +141,30 @@ class TestLogin(unittest.TestCase):
     # 自定义断言：把"校验标题"这件事收敛到一个地方
     # ---------------------------------------------------------------------- #
     def check_title(self, case_name, expected):
-        """断言当前页面标题等于预期值，并统一记录用例结果。
+        """断言当前页面标题符合预期，并统一记录用例结果。
 
         :param case_name: 用例中文名，只用于日志可读性
-        :param expected:  期望的页面标题
+        :param expected:  期望的页面标题关键字（来自 config.ini [assert]）
         :raise AssertionError: 标题不符时抛出 —— 用例会被报告标记为「失败」
+
+        ★ 匹配方式由 config.ini -> [assert] match_mode 决定（exact/contains/regex），
+          不是写死的相等判断。默认 contains：配置里只写「云媒资系统」这类稳定
+          关键字即可，页面标题带版本号、环境标识都不会误判。
 
         成功：写一条 INFO 日志
         失败：写 ERROR 日志（含 期望/实际 对比）+ 自动截图，再抛出异常
         """
         actual = self.login_page.get_title()
-        try:
-            self.assertEqual(actual, expected)
-        except AssertionError:
-            log1.error('测试用例执行失败:%s，期望[%s] 实际[%s]\n' % (case_name, expected, actual))
+        mode = Config.get_match_mode()
+        if not Config.match_title(actual, expected, mode):
+            log1.error('测试用例执行失败:%s，期望[%s] 实际[%s]（匹配模式：%s）\n'
+                       % (case_name, expected, actual, mode))
             # 关键：失败瞬间截图。这是排查问题最有效的证据
             self.login_page.get_img()
-            raise
-        log1.info('测试用例执行成功:%s\n' % case_name)
+            raise AssertionError('标题不匹配（模式 %s）：期望包含[%s] 实际[%s]'
+                                 % (mode, expected, actual))
+        log1.info('测试用例执行成功:%s（期望[%s] 实际[%s] 模式[%s] 已匹配）\n'
+                  % (case_name, expected, actual, mode))
 
     # ====================================================================== #
     # 用例（执行顺序由方法名 test_N 前缀固定，不要随意改名）
@@ -153,7 +174,7 @@ class TestLogin(unittest.TestCase):
 
         步骤：输入账号密码 -> 点登录 -> 校验跳转到统一门户首页。
         """
-        case_name = '登录成功'
+        case_name = self.case_names['login']
         log1.info('执行测试用例：%s' % case_name)
         self.login_page.login(self.username, self.password)
         self.check_title(case_name, self.title_login)
@@ -166,7 +187,7 @@ class TestLogin(unittest.TestCase):
         注意：switch_other_window() 是必须的，不切窗口的话
         后续所有元素定位都会在旧标签页上失败。
         """
-        case_name = '进入生产系统'
+        case_name = self.case_names['enter']
         log1.info('执行测试用例：%s' % case_name)
         self.login_page.click_sign_in()
         self.login_page.switch_other_window()   # 切到新打开的标签页
@@ -179,7 +200,7 @@ class TestLogin(unittest.TestCase):
 
         步骤：左侧菜单 内容管理 -> 素材库 -> 校验标题等于 [assert] title_material。
         """
-        case_name = '进入素材库'
+        case_name = self.case_names['material']
         log1.info('执行测试用例：%s' % case_name)
         self.login_page.page_wait('menu_load', 3)         # 等工作台的菜单加载完
         self.login_page.click_material()
@@ -196,7 +217,7 @@ class TestLogin(unittest.TestCase):
         前置条件：config.ini -> [testcase] upload_file 指向的文件必须真实存在，
                  否则本用例会以 FileNotFoundError 失败。
         """
-        case_name = '上传视频'
+        case_name = self.case_names['upload']
         log1.info('执行测试用例：%s' % case_name)
         self.login_page.upload_file(self.upload_file)     # 选择文件（直接赋值或 autoit 对话框）
         self.login_page.page_wait('upload_recognize', 3)  # 等上传组件识别到文件
@@ -210,7 +231,7 @@ class TestLogin(unittest.TestCase):
         步骤：输入关键字 -> 点查询 -> 点重置恢复初始列表。
         校验：查询是页内操作，标题不变。
         """
-        case_name = '关键字查询'
+        case_name = self.case_names['query']
         log1.info('执行测试用例：%s' % case_name)
         self.login_page.keyword_query(self.query_keyword)
         self.login_page.page_wait('query_result', 3)      # 等查询结果返回
@@ -226,7 +247,7 @@ class TestLogin(unittest.TestCase):
         不再直接摸 driver —— 迁移前这里是 self.driver.refresh()，属于绕过分层的历史遗留，
         且 Playwright 切换标签页后旧 driver 引用不会自动指向新页面，直接刷新会刷错标签页。
         """
-        case_name = '报送'
+        case_name = self.case_names['submit']
         log1.info('执行测试用例：%s' % case_name)
         self.login_page.refresh()                         # 刷新，确保能看到刚上传的素材
         self.login_page.page_wait('refresh_render', 5)    # 等刷新后列表重新渲染

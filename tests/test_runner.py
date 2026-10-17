@@ -247,10 +247,26 @@ class TestResolveJunitPath(unittest.TestCase):
         with patch_config(), patch_dirs():
             self.assertIsNone(runner.resolve_junit_path(''))
 
-    def test_相对路径按工程根解析(self):
+    def test_相对路径随报告目录解析(self):
+        """相对路径写文件名即与 HTML 报告同住（隔离时同进 runId 子目录）。
+
+        旧行为是相对工程根解析 —— 隔离开启后报告进了 Report/<runId>/ 而
+        JUnit 留在 Report/ 根下，两个并发构建会互相覆盖 JUnit 结果。
+        新语义：取文件名 join 到报告目录。旧写法 'Report/xxx.xml' 中的
+        目录段会被剥掉（避免套娃成 Report/<runId>/Report/）。
+        """
         with patch_config(), patch_dirs() as root:
             path = runner.resolve_junit_path('out/res.xml')
-            self.assertEqual(path, os.path.normpath(os.path.join(root, 'out', 'res.xml')))
+            expected = os.path.join(root, 'Report', 'res.xml')
+            self.assertEqual(path, os.path.normpath(expected))
+
+    def test_旧写法Report前缀被剥掉(self):
+        with patch_config(), patch_dirs() as root:
+            path = runner.resolve_junit_path('Report/junit-results.xml')
+            expected = os.path.join(root, 'Report', 'junit-results.xml')
+            self.assertEqual(path, os.path.normpath(expected))
+            self.assertNotIn(os.path.join('Report', 'Report'), path,
+                             '不应套娃出 Report/Report/')
 
     def test_绝对路径原样保留(self):
         with patch_config(), patch_dirs() as root:

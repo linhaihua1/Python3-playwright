@@ -21,6 +21,7 @@ from unittest import mock
 
 from tests.helpers import patch_config, patch_dirs
 from Common import sentMail
+from Common import dir_config
 from Common.sentMail import find_latest_report, sent_mail
 
 
@@ -62,12 +63,12 @@ class TestFindLatestReport(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_目录不存在时返回None(self):
-        with mock.patch.object(sentMail, 'htmlreport_dir',
+        with mock.patch.object(dir_config, 'htmlreport_dir',
                                os.path.join(self.tmpdir, '没有这个目录')):
             self.assertIsNone(find_latest_report())
 
     def test_目录为空时返回None(self):
-        with mock.patch.object(sentMail, 'htmlreport_dir', self.tmpdir):
+        with mock.patch.object(dir_config, 'htmlreport_dir', self.tmpdir):
             self.assertIsNone(find_latest_report())
 
     def test_取修改时间最新的报告(self):
@@ -78,13 +79,13 @@ class TestFindLatestReport(unittest.TestCase):
                 fp.write('x')
         os.utime(old, (1000, 1000))
         os.utime(new, (2000, 2000))
-        with mock.patch.object(sentMail, 'htmlreport_dir', self.tmpdir):
+        with mock.patch.object(dir_config, 'htmlreport_dir', self.tmpdir):
             self.assertEqual(find_latest_report(), new)
 
     def test_忽略非html文件(self):
         with open(os.path.join(self.tmpdir, 'junit-results.xml'), 'w') as fp:
             fp.write('x')
-        with mock.patch.object(sentMail, 'htmlreport_dir', self.tmpdir):
+        with mock.patch.object(dir_config, 'htmlreport_dir', self.tmpdir):
             self.assertIsNone(find_latest_report())
 
 

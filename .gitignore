@@ -56,3 +56,6 @@ Thumbs.db
 # Jenkins 工作目录里可能出现，本地调试也可能产生
 .ci/
 junit-selftest.xml
+
+# AI 编辑器本地工作目录（与 .idea 同理，不属于框架交付物）
+.trae/

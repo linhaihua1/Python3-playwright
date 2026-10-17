@@ -93,12 +93,18 @@ query_keyword = 测试
 # 对应环境变量：UI_ASSERT_TITLE_LOGIN 等（UI_ + 段 + 键，全大写）
 # --------------------------------------------------------------------------
 [assert]
-# 登录成功后统一门户首页的标题
+# ★ 匹配模式（技术参数，三个标题共用）：exact / contains / regex
+#   exact     完全相等，最严，但页面标题加了版本号就会误判
+#   contains  包含即通过（默认，推荐）—— 后缀有环境标识时不会被误伤
+#   regex     正则匹配，需要完全自定义判定逻辑时才用
+match_mode = contains
+
+# 三个标题的**关键字**：按上面的 match_mode 匹配页面实际标题。
+# 只写稳定不变的那段文字即可，不必连版本号、环境名一起抄 ——
+# 这样换环境（生产/测试）时标题后缀变了也不会失败。
 title_login = 统一门户
-# 进入生产系统（工作台）后的标题
-title_workbench = 工作台 - 云媒资系统
-# 进入素材库后的标题（上传/查询/报送用例也用它校验"页面未跳走"）
-title_material = 素材库 - 云媒资系统
+title_workbench = 云媒资系统
+title_material = 素材库
 
 
 # --------------------------------------------------------------------------
@@ -124,6 +130,93 @@ success_text =
 # 元素定位默认超时（秒），与 [ci] element_timeout 保持一致即可
 element_timeout = 15
 
+
+# --------------------------------------------------------------------------
+# 【元素定位】Common/elementPage.py 读取 — 换系统只改这一段，代码零改动
+#
+# ★ 为什么需要这一段：
+#   以前界面文案（「内容管理」「素材库」「报 送」…）硬编码在
+#   Common/elementPage.py 里，换一套系统就必须改代码 —— 那不算配置化。
+#   现在业务文案全部下沉到这里，代码里只剩通用的定位策略。
+#
+# ★ 三种写法，按需要选：
+#   ① 纯数据（最常用）：只写界面文字，框架用策略函数自动拼 xpath
+#        btn_login = 登录
+#      策略：文字类用「去空格匹配」，所以填「报送」也能命中页面上的「报 送」
+#   ② 多值数据：用竖线 | 分隔，命中任一即可
+#        field_keyword = 关键字|关键词|搜索
+#   ③ 完整定位表达式：键名加后缀 _xpath，直接覆盖框架的策略
+#        btn_login_xpath = //button[normalize-space(text())='登 录']
+#      适合框架策略搞不定、需要精确定位时
+#
+# ★ ${key} 插值：表达式里可引用本段其它键，改一处全部跟着变
+#        uploader_btn_id = global-uploader-btn
+#        btn_upload_dialog_xpath = //label[@id='${uploader_btn_id}']/i
+#
+# ★ 环境变量覆盖：UI_LOCATORS_ + 键名（全部大写）
+#        set UI_LOCATORS_BTN_LOGIN=登入
+#
+# ⚠️ 填写时请照抄被测系统页面上**真实显示**的文字，别自行加空格 ——
+#    框架的匹配已自带去空格容错，加了反而可能匹配不到。
+# --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# 【用例名称】TestSuites 读取 —— 只影响日志与报告里的显示文字
+# 业务术语（不同项目叫法不同）属于业务数据，同样不该写死在代码里。
+# 六项均可留空，留空则报告里显示 unittest 的方法名。
+# 对应环境变量：UI_CASE_NAMES_LOGIN 等（UI_ + 段 + 键，全大写）
+# --------------------------------------------------------------------------
+[case_names]
+# ---- 主业务流（TestSuites/testLogin.py 用）----
+login = 登录成功
+enter_system = 进入生产系统
+material = 进入素材库
+upload = 上传视频
+query = 关键字查询
+submit = 报送审核
+
+# ---- 只读自检用例集（TestSuites/testMaterialCheck.py 用）----
+controls = 查询区控件齐全
+keyword_input = 关键字输入与重置
+
+[locators]
+# ---- 第 1 站：门户登录页 ----
+username_input = 用户名
+password_input = 密码
+btn_login = 登录
+
+# ---- 第 2 站：从门户进生产系统（点它会新开标签页）----
+btn_enter_system = 发布系统
+
+# ---- 第 3 站：素材库导航 ----
+menu_first_level = 内容管理
+menu_second_level = 素材库
+
+# ---- 业务动作一：上传 ----
+# 上传按钮挂在哪个 id 上（id 最稳，前端不会随便改）
+btn_upload_dialog = global-uploader-btn
+# 隐藏的文件控件 id；留空则框架按通用特征 //input[@type='file'] 找
+input_file =
+# 上传表单三个字段的 placeholder 关键词（可多值）
+field_author = 作者
+field_phone = 手机
+field_reporting = 单位
+# 三个动作按钮的文字
+btn_upload_submit = 上传
+# 文件列表收起按钮所在容器的 id
+btn_upload_collapse = global-uploader
+btn_confirm = 确定
+
+# ---- 业务动作二：关键字查询 ----
+field_keyword = 关键字|关键词|搜索
+btn_query = 查询
+btn_reset = 重置
+
+# ---- 业务动作三：报送 ----
+btn_submit_report = 报送
+combo_first_trial = 初审
+# 初审人下拉项：框架默认取第一项。若指定人选，直接填人名即可
+option_first_trial_person =
+btn_save = 保存
 
 # --------------------------------------------------------------------------
 # 报告元信息：Common/runner.py 读取。四个键全部【必填】（业务数据），

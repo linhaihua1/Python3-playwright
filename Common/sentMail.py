@@ -43,7 +43,9 @@ from email.mime.text import MIMEText             # 纯文本正文 / 附件内�
 from email.utils import formataddr               # 把"昵称+邮箱"格式化成标准写法
 
 from Common.config import Config
-from Common.dir_config import htmlreport_dir
+# 刻意不做顶层 from-import：htmlreport_dir 会被 runContext.init() 按
+# runId 改写（产物隔离），from-import 会固化旧值。使用时取模块属性。
+from Common import dir_config as _dir_config
 from Common.log import log1
 
 # SMTP 服务器与端口的兜底默认值（QQ 邮箱 SSL）——技术参数。
@@ -66,11 +68,11 @@ def find_latest_report():
     用途：调用方没指定报告时（例如手工执行 python -m Common.sentMail），
     自动挑一份最新的发出去，不用手输文件名。
     """
-    if not os.path.isdir(htmlreport_dir):
+    if not os.path.isdir(_dir_config.htmlreport_dir):
         return None
     files = [
-        os.path.join(htmlreport_dir, name)
-        for name in os.listdir(htmlreport_dir)
+        os.path.join(_dir_config.htmlreport_dir, name)
+        for name in os.listdir(_dir_config.htmlreport_dir)
         if name.lower().endswith('.html')
     ]
     # getmtime 返回文件最后修改时间，取最大的就是最新报告

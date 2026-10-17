@@ -81,6 +81,7 @@ query_keyword = 单元关键字
 title_login = 单元门户
 title_workbench = 单元工作台
 title_material = 单元素材库
+match_mode = contains
 
 [system]
 username_placeholder = 请输入用户名
@@ -88,6 +89,28 @@ password_placeholder = 请输入密码
 login_button_text = 登录
 success_text =
 element_timeout = 7
+
+# 元素定位：验证"界面文案进配置、代码零硬编码"这条约定。
+# 故意用与工程默认值不同的文案，测试才能证明值真的来自配置而不是写死。
+[locators]
+username_input = 单元用户
+password_input = 单元密码
+btn_login = 单元登录
+btn_enter_system = 单元发布
+menu_first_level = 单元内容
+menu_second_level = 单元素材
+field_keyword = 单元关键字|单元关键词
+btn_query = 单元查询
+btn_reset = 单元重置
+btn_submit_report = 单元报送
+combo_first_trial = 单元初审
+btn_save = 单元保存
+
+[case_names]
+login = 单元登录成功
+material = 单元进入素材库
+controls = 单元控件齐全
+keyword_input = 单元关键字输入
 
 [report]
 title = 单元测试报告
@@ -232,6 +255,7 @@ def patch_dirs(root=None):
     """
     root = root or _register_temp_dir(tempfile.mkdtemp(prefix='ut_root_'))
     fake_getcwd = _FakeGetcwd(root)
+    img_dir = os.path.join(root, 'img')
     report_dir = os.path.join(root, 'Report')
     cases_dir = os.path.join(root, 'TestSuites')
 
@@ -239,18 +263,22 @@ def patch_dirs(root=None):
     import Common.log as log_module
     import Common.runner as runner_module
     import Common.sentMail as mail_module
+    import Common.dir_config as dir_config_module
 
     # UI_LOG_DIR 是"进程级"的日志目录覆盖（tests/__init__.py 用它避免污染工程 Logs/），
     # 优先级高于下面给 Common.log.getcwd 打的桩。用例级别要接管日志目录，
     # 就得先把它摘掉，退出上下文时再原样放回，否则 test_log.py 会写到共享临时目录去。
     saved_log_dir = os.environ.pop('UI_LOG_DIR', None)
     try:
+        # htmlreport_dir 改打在 dir_config 上（产物路径的单一来源）：
+        # runner / sentMail 都是运行时经 _dir_config.<属性> 取值的，
+        # patch 这一处即同时覆盖两者 —— 比旧版逐模块打桩更贴近真实架构。
         with mock.patch.object(base_page, 'getcwd', fake_getcwd), \
                 mock.patch.object(log_module, 'getcwd', fake_getcwd), \
                 mock.patch.object(runner_module, 'base_dir', root), \
-                mock.patch.object(runner_module, 'htmlreport_dir', report_dir), \
-                mock.patch.object(runner_module, 'testcases_dir', cases_dir), \
-                mock.patch.object(mail_module, 'htmlreport_dir', report_dir):
+                mock.patch.object(dir_config_module, 'htmlreport_dir', report_dir), \
+                mock.patch.object(dir_config_module, 'img_dir', img_dir), \
+                mock.patch.object(runner_module, 'testcases_dir', cases_dir):
             yield root
     finally:
         if saved_log_dir is not None:
@@ -682,8 +710,21 @@ class FakePage:
         self.frame_locators = []     # frame_locator() 的选择器
 
     # ---- 元素定位 ----
-    def locator(self, selector):
-        self.calls.append(('locator', selector))
+    def locator(self, selector, probe=False):
+        """构造一个定位器。
+
+        :param probe: True 表示这是**框架内部**的探测调用
+            （BasePage._pick_target 为"多个候选里挑首个分支命中"而额外发的定位），
+            不是用例的业务动作。标记后不计入 calls，
+            这样「页面操作顺序」类断言仍然只反映用例真正做了什么。
+
+            为什么需要区分：xpath 联合表达式的分支顺序无法控制
+            （Playwright 一律按文档序返回），框架只能在定位后
+            补发一次探测。这是正确性所必需的额外代价，
+            不应该让用例层的断言观察到。
+        """
+        if not probe:
+            self.calls.append(('locator', selector))
         return FakeLocator(self, self.element, selector)
 
     def locator_all(self, selector):

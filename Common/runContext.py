@@ -62,6 +62,16 @@ def init(run_id=None):
     :return: runId 字符串
 
     幂等：重复调用返回同一个 runId，不会重新生成。
+
+    ★ 为什么 init 里要改写 dir_config 的路径常量（验收实测发现的时序缺陷）：
+      dir_config 的 htmlreport_dir / img_dir / junitreport_file 是在
+      **模块 import 时**求值的，而 import runner 发生在 init() **之前** ——
+      求值那一刻 runContext 还没初始化，subdir() 只能原样返回根目录，
+      于是 [ci] isolated_output=true 被静默架空，产物全部落在 Report/
+      根下，并发构建照样互相覆盖 —— 恰好违背了这一配置的本意。
+      修法：init 是唯一且幂等的入口，在这里把隔离子目录一次性写回
+      dir_config 的常量。所有引用方（顶层 from-import 的 runner/sentMail、
+      函数内延迟 import 的工具方法）从此都拿到带 runId 的真实路径。
     """
     global _run_id, _initialized
     if _initialized and _run_id:
@@ -74,10 +84,26 @@ def init(run_id=None):
 
     isolated = Config.get_bool('ci', 'isolated_output', True)
     if isolated:
+        _apply_isolated_dirs()
         log1.info('产物目录隔离已开启，本次 runId = %s，所有产物将写入独立子目录' % _run_id)
     else:
         log1.info('产物目录隔离已关闭（[ci] isolated_output=false），产物写入根目录')
     return _run_id
+
+
+def _apply_isolated_dirs():
+    """把 runId 子目录写回 dir_config 的产物路径常量。【内部】
+
+    只处理三个"产物"路径；testcases_dir 是输入不是产物，不参与隔离。
+    junitreport_file 依赖 htmlreport_dir，必须一起重算，否则会出现
+    "报告进了子目录、JUnit XML 却留在根目录"的分裂。
+    """
+    from Common import dir_config
+    dir_config.htmlreport_dir = os.path.join(dir_config.htmlreport_dir, _run_id)
+    dir_config.img_dir = os.path.join(dir_config.img_dir, _run_id)
+    dir_config.junitreport_file = os.path.join(
+        dir_config.htmlreport_dir,
+        Config.get('paths', 'junit_filename', 'junit-results.xml'))
 
 
 def get_run_id():

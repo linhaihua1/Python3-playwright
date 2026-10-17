@@ -118,53 +118,107 @@ def _resolve_retry(test):
     return max(0, int(retry)), float(interval)
 
 
+def _ensure_counts(self):
+    """重试计数字典（惰性初始化）。【模块级，RetryTestResult 与
+    FlakyResultMixin 共享同一实现，避免两份逻辑漂移】
+
+    为什么惰性：FlakyResultMixin 组合出的 result 类走基类 __init__，
+    不会执行 RetryTestResult 的初始化 —— 硬属性会在 addFailure 时
+    炸出 AttributeError。惰性创建对两种载体都成立。
+    """
+    if getattr(self, '_retry_counts', None) is None:
+        self._retry_counts = {}
+    return self._retry_counts
+
+
 class RetryTestResult(unittest.TestResult):
     """带重试能力的 TestResult：用例失败时自动重跑。
 
     设计：包裹原始 result，在 addFailure/addError 时判断是否需要重试，
     需要则重新执行用例并记录，最终只把最后一次的结果传给原始 result。
+
+    ★ 为什么 startTest/stopTest/wasSuccessful/testsRun 要显式转发
+      （验收实测发现的语义缺陷）：
+      本类继承自 unittest.TestResult，这些名字在**父类上就有实现**，
+      Python 属性查找命中父类方法后根本不会走 __getattr__ 透传 ——
+      于是 startTest 把计数加在**自己身上**而 original 恒为 0，
+      addFailure 又只转发 original，自身 failures 恒为空，
+      最终 wasSuccessful() 恒为 True：全失败的执行被判成"成功"，
+      CI 会把挂着失败结果的构建标绿。修复方式就是逐个显式转发。
     """
 
     def __init__(self, original_result):
+        # ★ _original 必须先于 super().__init__ 赋值：
+        #   父类 __init__ 里会设置 self.testsRun = 0，而 testsRun 已被
+        #   改写为转发 property —— setter 要访问 _original，
+        #   顺序反了就是无限递归（验收实测踩过）。
+        self._original = original_result
         super().__init__(original_result.stream if hasattr(original_result, 'stream') else None,
                          original_result.showAll if hasattr(original_result, 'showAll') else False,
                          original_result.dots if hasattr(original_result, 'dots') else False)
-        self._original = original_result
         self._retry_counts = {}      # test.id() -> 已重试次数
+
+    # ---- 显式转发：这些方法在父类上有实现，__getattr__ 拦不到 ----
+    def startTest(self, test):
+        self._original.startTest(test)
+
+    def stopTest(self, test):
+        self._original.stopTest(test)
+
+    def wasSuccessful(self):
+        return self._original.wasSuccessful()
+
+    @property
+    def testsRun(self):
+        return self._original.testsRun
+
+    @testsRun.setter
+    def testsRun(self, value):
+        self._original.testsRun = value
+
+    _counts = _ensure_counts
 
     def _should_retry(self, test):
         """判断这条用例是否还能重试。"""
         retry_max, _ = _resolve_retry(test)
         if retry_max <= 0:
             return False
-        done = self._retry_counts.get(test.id(), 0)
+        done = self._counts().get(test.id(), 0)
         return done < retry_max
 
     def _run_with_retry(self, test, err):
-        """失败后重试用例，返回最终是否通过。"""
+        """失败后重试用例，返回最终是否通过。
+
+        ★ 为什么是 while 循环而不是单次重试（验收实测发现的缺陷）：
+          旧实现只重试一次就返回 —— 配置 retry=3 实际只执行 2 次
+          （初次 1 次 + 重试 1 次），用例没跑满配置给的机会，
+          "降低偶发失败率"的目标打了折扣。改为循环重试：
+          每轮计一次数，成功立即返回，失败且未到上限则继续。
+        """
         retry_max, interval = _resolve_retry(test)
         case_id = test.id()
-        attempt = self._retry_counts.get(case_id, 0) + 1
-        self._retry_counts[case_id] = attempt
+        test_method = getattr(test, test._testMethodName)
 
-        log1.warning('[用例重试] %s 第 %d/%d 次重试（上次失败：%s）'
-                     % (case_id, attempt, retry_max, str(err[1])[:100]))
+        while self._counts().get(case_id, 0) < retry_max:
+            attempt = self._counts().get(case_id, 0) + 1
+            self._counts()[case_id] = attempt
 
-        if interval > 0:
-            time.sleep(interval)
+            log1.warning('[用例重试] %s 第 %d/%d 次重试（上次失败：%s）'
+                         % (case_id, attempt, retry_max, str(err[1])[:100]))
 
-        # 新建一个临时 result 来跑这次重试
-        temp_result = unittest.TestResult()
-        try:
-            # 重新执行 setUp + 用例方法 + tearDown
-            test.setUp()
-            test_method = getattr(test, test._testMethodName)
-            test_method()
-            test.tearDown()
-            return True      # 重试成功
-        except Exception:        # noqa: BLE001 - 捕获所有异常判断是否继续重试
-            test.tearDown()
-            return False
+            if interval > 0:
+                time.sleep(interval)
+
+            try:
+                # 重新执行 setUp + 用例方法 + tearDown
+                test.setUp()
+                test_method()
+                test.tearDown()
+                return True      # 重试成功
+            except Exception:    # noqa: BLE001 - 捕获所有异常判断是否继续重试
+                test.tearDown()
+                # 未达上限继续下一轮；达到上限退出循环返回 False
+        return False
 
     def addFailure(self, test, err):
         if self._should_retry(test) and self._run_with_retry(test, err):
@@ -239,3 +293,72 @@ def wrap_for_retry(test_runner):
         log1.info('已启用用例级 flaky 重试：最多 %d 次，间隔 %.1f 秒'
                   % (_get_global_retry(), _get_retry_interval()))
     return test_runner
+
+
+# ===========================================================================
+# 结果类混入：把重试能力挂进 runner 的正常报告流程（企业级接入点）
+#
+# 【为什么不用 RetryRunner 包装（验收实测的结论）】
+#   HTMLTestRunner 在 run() 内部就完成了 HTML 渲染，RetryRunner 在外层
+#   重试的结果**回写不进已生成的报告** —— 报告显示失败、JUnit/退出码
+#   却是成功，两份证据互相矛盾，这在 CI 上比不重试更糟。
+#   正确姿势是把重试做进 result 类本身：addFailure 发生在报告流程内，
+#   重试成功后按成功记录，HTML / JUnit / 退出码三份证据天然一致。
+# ===========================================================================
+class FlakyResultMixin:
+    """给任意 TestResult 子类混入「失败自动重试」能力。
+
+    用法（在 runner.py 里）：
+        resultclass = make_flaky_result_class(JUnitResult)   # 组合而非继承固定类
+        HTMLTestRunner(..., resultclass=resultclass)
+
+    重试语义见 RetryTestResult._run_with_retry：按 @flaky 标记或
+    [ci] flaky_retry 配置循环重试，成功按成功记录、用尽按最终结果记录。
+    """
+
+    # 借用 RetryTestResult 的既有实现，避免两份重试逻辑漂移
+    _counts = _ensure_counts
+    _should_retry = RetryTestResult._should_retry
+    _run_with_retry = RetryTestResult._run_with_retry
+
+    def addFailure(self, test, err):
+        if self._should_retry(test) and self._run_with_retry(test, err):
+            self.addSuccess(test)
+            return
+        super().addFailure(test, err)
+
+    def addError(self, test, err):
+        if self._should_retry(test) and self._run_with_retry(test, err):
+            self.addSuccess(test)
+            return
+        super().addError(test, err)
+
+
+def make_flaky_result_class(base_class):
+    """把「失败自动重试」混入一个 TestResult 子类，返回新类。
+
+    :param base_class: 原 result 类（如 JUnitResult）
+    :return: 组合后的新类；mixin 在前保证重试逻辑优先于基类记录
+    """
+    return type('FlakyResult', (FlakyResultMixin, base_class), {})
+
+
+def suite_needs_retry(suite):
+    """判断 suite 里是否存在显式打了 @flaky 标记的用例。【内部】"""
+    for case in _iter_suite_cases(suite):
+        method = getattr(case, getattr(case, '_testMethodName', ''), None)
+        if getattr(method, '_flaky_retry', None) is not None:
+            return True
+        if getattr(type(case), '_flaky_retry', None) is not None:
+            return True
+    return False
+
+
+def _iter_suite_cases(suite):
+    """递归展开 TestSuite（不依赖 runner，避免循环导入）。"""
+    import unittest
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from _iter_suite_cases(item)
+        else:
+            yield item
